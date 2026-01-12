@@ -303,4 +303,22 @@ function checkout_login_popup_shortcode()
 add_shortcode('checkout_login_popup', 'checkout_login_popup_shortcode');
 
 require_once get_stylesheet_directory() . '/inc/seat-lock.php';
-// require_once get_stylesheet_directory() . '/inc/js_wp.php';
+// ===========================
+// Js Syncing
+// ===========================
+function mytheme_scripts() {
+    $scripts = array(
+        'main' => '\windpassenger custom js\custom js.js',
+    );
+
+    foreach ($scripts as $handle => $path) {
+        wp_enqueue_script(
+            $handle,
+            get_template_directory_uri() . $path,
+            array('jquery'),
+            filemtime(get_template_directory() . $path),
+            true
+        );
+    }
+}
+add_action('wp_enqueue_scripts', 'mytheme_scripts');
