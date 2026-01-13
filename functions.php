@@ -10,7 +10,9 @@
  * @package HelloElementorChild
  */
 
-// require_once get_stylesheet_directory() . '/inc/seat-lock.php';
+
+
+require_once get_stylesheet_directory() . '/inc/class-flight-booking-engine.php';
 
 if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
@@ -41,10 +43,11 @@ add_action('wp_enqueue_scripts', 'hello_elementor_child_scripts_styles', 20);
 // ===========================
 // Js Syncing
 // ===========================
-function hello_child_enqueue_scripts() {
+function hello_child_enqueue_scripts()
+{
 
     $scripts = array(
-        'main'   => '/js/custom.js',
+        'main' => '/js/custom.js',
     );
 
     foreach ($scripts as $handle => $path) {
@@ -327,139 +330,3 @@ function checkout_login_popup_shortcode()
 
 add_shortcode('checkout_login_popup', 'checkout_login_popup_shortcode');
 
-//==========================
-// SQL Query to check available tickets before booking
-//==========================
-
-if ( ! defined('ABSPATH') ) exit;
-
-/* ======================================================
-   CORE: LIVE SEAT CALCULATION (DB = SOURCE OF TRUTH)
-====================================================== */
-function wp_get_available_tickets_for_flight( $flight_id ) {
-    global $wpdb;
-
-    static $cache = [];
-
-    if ( isset($cache[$flight_id]) ) {
-        return $cache[$flight_id];
-    }
-
-    $units    = $wpdb->prefix . 'jet_apartment_units';
-    $bookings = $wpdb->prefix . 'jet_apartment_bookings';
-
-    // Total seats
-    $total = (int) $wpdb->get_var(
-        $wpdb->prepare(
-            "SELECT COUNT(*) FROM {$units} WHERE apartment_id = %d",
-            $flight_id
-        )
-    );
-
-    // Used seats (pending + completed only)
-    $used = (int) $wpdb->get_var(
-        $wpdb->prepare(
-            "SELECT COUNT(*) FROM {$bookings}
-             WHERE apartment_id = %d
-             AND status IN ('pending','completed')",
-            $flight_id
-        )
-    );
-
-    $available = max(0, $total - $used);
-
-    // Mirror meta (optional but useful)
-    update_post_meta($flight_id, '_jc_capacity', $available);
-
-    return $cache[$flight_id] = $available;
-}
-
-/* ======================================================
-   ADMIN COLUMN (Crocoblock Custom Callback Style)
-====================================================== */
-add_filter('manage_tickets_posts_columns', function ($cols) {
-    $cols['available_capacity'] = 'Available Capacity';
-    return $cols;
-});
-
-add_action(
-    'manage_tickets_posts_custom_column',
-    function ($col, $post_id) {
-
-        if ($col !== 'available_capacity') return;
-
-        $available = wp_get_available_tickets_for_flight($post_id);
-
-        echo '<strong class="wpj-admin-capacity"
-                data-flight-id="' . esc_attr($post_id) . '"
-                data-last="' . esc_attr($available) . '">'
-                . esc_html($available) .
-             '</strong>';
-    },
-    10,
-    2
-);
-
-/* ======================================================
-   ADMIN AJAX (LIGHT + FAST)
-====================================================== */
-add_action('wp_ajax_wpj_admin_capacity', function () {
-
-    $flight_id = absint($_POST['flight_id'] ?? 0);
-    if (!$flight_id) {
-        wp_send_json_error();
-    }
-
-    wp_send_json_success([
-        'available' => wp_get_available_tickets_for_flight($flight_id)
-    ]);
-});
-
-/* ======================================================
-   ADMIN JS (LIVE AUTO-REFRESH, NO RELOAD)
-====================================================== */
-add_action('admin_footer', function () {
-
-    $screen = get_current_screen();
-    if (!$screen || $screen->post_type !== 'tickets') return;
-?>
-<script>
-(() => {
-
-  const cells = document.querySelectorAll('.wpj-admin-capacity');
-  if (!cells.length) return;
-
-  function refreshCapacities() {
-    cells.forEach(el => {
-
-      const flightId = el.dataset.flightId;
-      const last     = parseInt(el.dataset.last, 10);
-
-      fetch(ajaxurl, {
-        method: 'POST',
-        headers: {'Content-Type':'application/x-www-form-urlencoded'},
-        body: new URLSearchParams({
-          action: 'wpj_admin_capacity',
-          flight_id: flightId
-        })
-      })
-      .then(r => r.json())
-      .then(res => {
-        if (!res.success) return;
-
-        const available = parseInt(res.data.available, 10);
-        if (available !== last) {
-          el.textContent = available;
-          el.dataset.last = available;
-        }
-      });
-    });
-  }
-
-  refreshCapacities();
-  setInterval(refreshCapacities, 15000); // admin-safe interval
-
-})();
-</script>
-<?php
-});

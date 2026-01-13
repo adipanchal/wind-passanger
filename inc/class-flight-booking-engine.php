@@ -1,0 +1,519 @@
+<?php
+/**
+ * Flight Booking Engine
+ * Handles real-time availability checks via REST API & Voucher Validation.
+ * Also handles Admin Columns for live capacity.
+ */
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+class WPJ_Flight_Booking_Engine
+{
+
+    private static $instance = null;
+
+    public static function instance()
+    {
+        if (is_null(self::$instance)) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    public function __construct()
+    {
+        // REST API
+        add_action('rest_api_init', [$this, 'register_routes']);
+
+        // Frontend Scripts & Shortcodes
+        add_action('wp_enqueue_scripts', [$this, 'localize_scripts'], 99);
+        add_shortcode('live_seats', [$this, 'shortcode_live_seats']);
+
+        // Admin Columns (Tickets CPT)
+        add_filter('manage_tickets_posts_columns', [$this, 'add_admin_columns']);
+        add_action('manage_tickets_posts_custom_column', [$this, 'render_admin_columns'], 10, 2);
+
+        // Admin AJAX & Footer Script
+        add_action('wp_ajax_wpj_admin_capacity', [$this, 'ajax_admin_capacity']);
+        add_action('admin_footer', [$this, 'admin_footer_script']);
+        
+        // JetFormBuilder Validation (Prevent Race Condition)
+        add_filter('jet-form-builder/custom-action/before-send', [$this, 'validate_booking_availability'], 10, 2);
+    }
+    
+    /**
+     * Add custom cron interval (every minute)
+     */
+    public function add_cron_interval($schedules) {
+        $schedules['every_minute'] = [
+            'interval' => 60,
+            'display'  => __('Every Minute')
+        ];
+        return $schedules;
+    }
+    
+    /**
+     * Create Reservations Table
+     */
+    public function maybe_create_reservations_table() {
+        global $wpdb;
+        
+        $table_name = $wpdb->prefix . 'wpj_seat_reservations';
+        
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name) {
+            return; // Table exists
+        }
+        
+        $charset_collate = $wpdb->get_charset_collate();
+        
+        $sql = "CREATE TABLE $table_name (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            flight_id BIGINT(20) UNSIGNED NOT NULL,
+            session_id VARCHAR(64) NOT NULL,
+            seats_reserved INT(11) NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL,
+            expires_at DATETIME NOT NULL,
+            PRIMARY KEY (id),
+            KEY flight_id (flight_id),
+            KEY session_id (session_id),
+            KEY expires_at (expires_at)
+        ) $charset_collate;";
+        
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+    }
+    
+    /**
+     * Cleanup Expired Reservations (Cron Job)
+     */
+    public function cleanup_expired_reservations() {
+        global $wpdb;
+        $table = $wpdb->prefix . 'wpj_seat_reservations';
+        
+        $wpdb->query("DELETE FROM $table WHERE expires_at < NOW()");
+    }
+    
+    /**
+     * Get Session ID (for tracking reservations)
+     * Uses a cookie-based approach for REST API compatibility
+     */
+    private function get_session_id() {
+        // Check for existing cookie
+        if (isset($_COOKIE['wpj_session_id'])) {
+            return sanitize_text_field($_COOKIE['wpj_session_id']);
+        }
+        
+        // Generate new session ID
+        $session_id = wp_generate_uuid4();
+        
+        // Set cookie (valid for 1 hour)
+        if (!headers_sent()) {
+            setcookie('wpj_session_id', $session_id, time() + 3600, '/');
+        }
+        
+        return $session_id;
+    }
+
+    /**
+     * Core Logic: Get Availability
+     * Returns array [total, booked, reserved, available]
+     */
+    public function get_flight_data($flight_id, $exclude_session = null)
+    {
+        global $wpdb;
+
+        $flight_id = absint($flight_id);
+        if (!$flight_id)
+            return ['total' => 0, 'booked' => 0, 'reserved' => 0, 'available' => 0];
+
+        $units_table = $wpdb->prefix . 'jet_apartment_units';
+        $bookings_table = $wpdb->prefix . 'jet_apartment_bookings';
+        $reservations_table = $wpdb->prefix . 'wpj_seat_reservations';
+
+        // 1. Get Total Capacity
+        $total_seats = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$units_table} WHERE apartment_id = %d",
+            $flight_id
+        ));
+
+        // 2. Get Booked Seats
+        $booked_seats = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$bookings_table} 
+             WHERE apartment_id = %d 
+             AND status IN ('pending', 'processing', 'completed', 'wc-pending', 'wc-processing', 'wc-completed')",
+            $flight_id
+        ));
+
+        // 3. Get Reserved Seats (only if table exists)
+        $reserved_seats = 0;
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$reservations_table'") === $reservations_table;
+        
+        if ($table_exists) {
+            $session_id = $exclude_session ?? $this->get_session_id();
+            $reserved_seats = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COALESCE(SUM(seats_reserved), 0) FROM {$reservations_table} 
+                 WHERE flight_id = %d 
+                 AND session_id != %s
+                 AND expires_at > NOW()",
+                $flight_id, $session_id
+            ));
+        }
+
+        $available = max(0, $total_seats - $booked_seats - $reserved_seats);
+
+        return [
+            'total' => $total_seats,
+            'booked' => $booked_seats,
+            'reserved' => $reserved_seats,
+            'available' => $available
+        ];
+    }
+
+    /**
+     * REST API Registration
+     */
+    public function register_routes()
+    {
+        register_rest_route('wpj/v1', '/flight-status', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_get_flight_status'],
+            'permission_callback' => '__return_true', // Public
+            'args' => [
+                'flight_id' => [
+                    'required' => true,
+                    'validate_callback' => function ($param) {
+                        return is_numeric($param);
+                    }
+                ]
+            ]
+        ]);
+        
+        // Reserve Seats - MINIMAL TEST VERSION
+        register_rest_route('wpj/v1', '/reserve-seats', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rest_reserve_seats_minimal'],
+            'permission_callback' => '__return_true'
+        ]);
+    }
+    
+    /**
+     * REST: Reserve Seats - WORKING VERSION
+     */
+    public function rest_reserve_seats_minimal($request) {
+        global $wpdb;
+        
+        $flight_id = isset($_POST['flight_id']) ? absint($_POST['flight_id']) : 0;
+        $seats = isset($_POST['seats']) ? absint($_POST['seats']) : 0;
+        
+        if (!$flight_id || !$seats) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'Missing parameters'
+            ], 200);
+        }
+        
+        // Get or create persistent session ID via cookie
+        if (isset($_COOKIE['wpj_session_id'])) {
+            $session_id = sanitize_text_field($_COOKIE['wpj_session_id']);
+        } else {
+            $session_id = 'session_' . wp_generate_password(32, false);
+            // Set cookie for 1 hour
+            setcookie('wpj_session_id', $session_id, time() + 3600, '/');
+        }
+        
+        $table = $wpdb->prefix . 'wpj_seat_reservations';
+        
+        // CRITICAL: Delete old reservation for THIS session and flight first
+        $wpdb->delete($table, [
+            'flight_id' => $flight_id,
+            'session_id' => $session_id
+        ]);
+        
+        // Now insert the NEW reservation
+        $wpdb->insert($table, [
+            'flight_id' => $flight_id,
+            'session_id' => $session_id,
+            'seats_reserved' => $seats,
+            'created_at' => current_time('mysql'),
+            'expires_at' => gmdate('Y-m-d H:i:s', time() + 600) // 10 minutes
+        ]);
+        
+        if ($wpdb->last_error) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'DB Error: ' . $wpdb->last_error
+            ], 200);
+        }
+        
+        return new WP_REST_Response([
+            'success' => true,
+            'reserved' => $seats,
+            'expires_in' => 600,
+            'session_id' => $session_id, // For debugging
+            'message' => "Reserved $seats seats for 10 minutes"
+        ], 200);
+    }
+    
+    /**
+     * REST: Reserve Seats
+     */
+    public function rest_reserve_seats($request) {
+        global $wpdb;
+        
+        $flight_id = absint($request->get_param('flight_id'));
+        $seats = absint($request->get_param('seats'));
+        
+        // Simple session ID (no cookies for now)
+        $session_id = isset($_COOKIE['wpj_session_id']) 
+            ? sanitize_text_field($_COOKIE['wpj_session_id']) 
+            : 'session_' . time() . '_' . rand(1000, 9999);
+        
+        $table = $wpdb->prefix . 'wpj_seat_reservations';
+        
+        // Check table exists
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
+        if (!$table_exists) {
+            $this->maybe_create_reservations_table();
+        }
+        
+        // Delete any existing reservation for this session/flight
+        $wpdb->delete($table, [
+            'flight_id' => $flight_id,
+            'session_id' => $session_id
+        ]);
+        
+        // Create new reservation (5 minutes expiry)
+        $expires = gmdate('Y-m-d H:i:s', time() + 300);
+        $created = gmdate('Y-m-d H:i:s', time());
+        
+        $result = $wpdb->insert($table, [
+            'flight_id' => $flight_id,
+            'session_id' => $session_id,
+            'seats_reserved' => $seats,
+            'created_at' => $created,
+            'expires_at' => $expires
+        ]);
+        
+        if ($result === false) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'Database error: ' . $wpdb->last_error
+            ], 200);
+        }
+        
+        return new WP_REST_Response([
+            'success' => true,
+            'reserved' => $seats,
+            'expires_in' => 300,
+            'message' => "Reserved $seats seats for 5 minutes"
+        ], 200);
+    }
+    
+    /**
+     * REST: Release Seats
+     */
+    public function rest_release_seats($request) {
+        global $wpdb;
+        
+        $flight_id = absint($request->get_param('flight_id'));
+        $session_id = $this->get_session_id();
+        $table = $wpdb->prefix . 'wpj_seat_reservations';
+        
+        $wpdb->delete($table, [
+            'flight_id' => $flight_id,
+            'session_id' => $session_id
+        ]);
+        
+        return new WP_REST_Response([
+            'success' => true,
+            'message' => 'Reservation released'
+        ], 200);
+    }
+
+    /**
+     * REST API Callback
+     */
+    public function rest_get_flight_status($request)
+    {
+        $flight_id = $request->get_param('flight_id');
+        $data = $this->get_flight_data($flight_id);
+
+        return new WP_REST_Response([
+            'flight_id' => $flight_id,
+            'total' => $data['total'],
+            'booked' => $data['booked'],
+            'available' => $data['available'],
+            'timestamp' => time()
+        ], 200);
+    }
+
+    /**
+     * Frontend Scripts
+     */
+    public function localize_scripts()
+    {
+        // 1. Check for Voucher in URL
+        $voucher_data = false;
+        if (!empty($_GET['voucher_id'])) {
+            $voucher_id = absint($_GET['voucher_id']);
+            $passengers = (int) get_post_meta($voucher_id, 'voucher_passengers', true);
+            if ($passengers > 0) {
+                $voucher_data = [
+                    'id' => $voucher_id,
+                    'passengers' => $passengers
+                ];
+            }
+        }
+
+        wp_localize_script('hello-child-main', 'wpj_flight_obj', [
+            'api_url' => esc_url_raw(rest_url('wpj/v1/flight-status')),
+            'reserve_url' => esc_url_raw(rest_url('wpj/v1/reserve-seats')),
+            'nonce' => wp_create_nonce('wp_rest'),
+            // NOTE: flight_id is now determined dynamically from form data
+            'voucher' => $voucher_data, // Pass to JS
+            'texts' => [
+                'locked' => __('Locked by Voucher', 'hello-elementor-child'),
+                'seats_left' => __('seats available', 'hello-elementor-child'),
+                'no_seats' => __('Sold Out', 'hello-elementor-child'),
+                'exceed_error' => __('Not enough seats! Max available: ', 'hello-elementor-child'),
+                'reserved' => __('seats reserved for you', 'hello-elementor-child'),
+            ]
+        ]);
+    }
+
+    /**
+     * Shortcode [live_seats]
+     */
+    public function shortcode_live_seats()
+    {
+        return '<span class="wpj-live-seats-count">...</span>';
+    }
+
+    /* ======================================================
+       ADMIN COLUMNS & AJAX
+    ====================================================== */
+
+    public function add_admin_columns($cols)
+    {
+        $cols['available_capacity'] = 'Available Capacity';
+        return $cols;
+    }
+
+    public function render_admin_columns($col, $post_id)
+    {
+        if ($col !== 'available_capacity')
+            return;
+
+        $data = $this->get_flight_data($post_id);
+        $available = $data['available'];
+
+        echo '<strong class="wpj-admin-capacity"
+                data-flight-id="' . esc_attr($post_id) . '"
+                data-last="' . esc_attr($available) . '">'
+            . esc_html($available) .
+            '</strong>';
+    }
+
+    public function ajax_admin_capacity()
+    {
+        // Permission Check?
+        // if (!current_user_can('edit_posts')) wp_send_json_error();
+
+        $flight_id = absint($_POST['flight_id'] ?? 0);
+        if (!$flight_id) {
+            wp_send_json_error();
+        }
+
+        $data = $this->get_flight_data($flight_id);
+
+        wp_send_json_success([
+            'available' => $data['available']
+        ]);
+    }
+
+    public function admin_footer_script()
+    {
+        $screen = get_current_screen();
+        if (!$screen || $screen->post_type !== 'tickets')
+            return;
+        ?>
+        <script>
+            (() => {
+                const cells = document.querySelectorAll('.wpj-admin-capacity');
+                if (!cells.length) return;
+
+                function refreshCapacities() {
+                    cells.forEach(el => {
+                        const flightId = el.dataset.flightId;
+                        const last = parseInt(el.dataset.last, 10);
+
+                        fetch(ajaxurl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({
+                                action: 'wpj_admin_capacity',
+                                flight_id: flightId
+                            })
+                        })
+                            .then(r => r.json())
+                            .then(res => {
+                                if (!res.success) return;
+                                const available = parseInt(res.data.available, 10);
+                                if (available !== last) {
+                                    el.textContent = available;
+                                    el.dataset.last = available;
+
+                                    // Visual Flash
+                                    el.style.color = 'green';
+                                    setTimeout(() => el.style.color = '', 500);
+                                }
+                            });
+                    });
+                }
+
+                setInterval(refreshCapacities, 15000); // 15s Interval
+            })();
+        </script>
+        <?php
+    }
+    /* ======================================================
+       JETFORMBUILDER VALIDATION (RACE CONDITION PROTECTION)
+    ====================================================== */
+
+    public function validate_booking_availability($request, $handler)
+    {
+        // Get form data
+        $form_data = $request;
+        
+        // Check if this is a flight booking form (has flight_id and unit_number)
+        if (empty($form_data['flight_id']) || empty($form_data['unit_number'])) {
+            return $request; // Not a booking form, skip validation
+        }
+
+        $flight_id = absint($form_data['flight_id']);
+        $requested_seats = absint($form_data['unit_number']);
+
+        // Get CURRENT availability (fresh check at submission time)
+        $availability_data = $this->get_flight_data($flight_id);
+        $available_seats = $availability_data['available'];
+
+        // CRITICAL CHECK: Reject if not enough seats
+        if ($requested_seats > $available_seats) {
+            // Throw exception to stop form processing
+            throw new \Exception(
+                sprintf(
+                    'Booking failed: Only %d seat(s) currently available for this flight. Please refresh the page and adjust your booking.',
+                    $available_seats
+                )
+            );
+        }
+
+        // Validation passed, allow booking to proceed
+        return $request;
+    }
+}
+
+// Initialize
+WPJ_Flight_Booking_Engine::instance();
