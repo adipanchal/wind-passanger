@@ -24,6 +24,16 @@ class WPJ_Flight_Booking_Engine
 
     public function __construct()
     {
+        // Database Setup - Create table immediately
+        $this->maybe_create_reservations_table();
+        add_filter('cron_schedules', [$this, 'add_cron_interval']);
+        
+        // Schedule cleanup cron if not already scheduled
+        if (!wp_next_scheduled('wpj_cleanup_reservations')) {
+            wp_schedule_event(time(), 'every_minute', 'wpj_cleanup_reservations');
+        }
+        add_action('wpj_cleanup_reservations', [$this, 'cleanup_expired_reservations']);
+        
         // REST API
         add_action('rest_api_init', [$this, 'register_routes']);
 
@@ -41,6 +51,10 @@ class WPJ_Flight_Booking_Engine
         
         // JetFormBuilder Validation (Prevent Race Condition)
         add_filter('jet-form-builder/custom-action/before-send', [$this, 'validate_booking_availability'], 10, 2);
+        
+        // Booking Completion Cleanup - DISABLED (causes critical errors)
+        // Cron cleanup handles expired reservations reliably
+        // add_action('jet-booking/db/booking-inserted', [$this, 'cleanup_reservation_after_booking'], 10, 2);
     }
     
     /**
@@ -87,12 +101,21 @@ class WPJ_Flight_Booking_Engine
     
     /**
      * Cleanup Expired Reservations (Cron Job)
+     * Runs every minute to delete ONLY expired reservations
      */
     public function cleanup_expired_reservations() {
         global $wpdb;
         $table = $wpdb->prefix . 'wpj_seat_reservations';
         
-        $wpdb->query("DELETE FROM $table WHERE expires_at < NOW()");
+        // Log before cleanup for debugging
+        $count_before = $wpdb->get_var("SELECT COUNT(*) FROM $table");
+        
+        // Delete only expired reservations
+        $deleted = $wpdb->query("DELETE FROM $table WHERE expires_at < NOW()");
+        
+        if ($deleted > 0) {
+            error_log("[WPJ Cron] Deleted {$deleted} expired reservations (Total before: {$count_before})");
+        }
     }
     
     /**
@@ -196,6 +219,13 @@ class WPJ_Flight_Booking_Engine
             'callback' => [$this, 'rest_reserve_seats_minimal'],
             'permission_callback' => '__return_true'
         ]);
+        
+        // Release Seats - For Beacon cleanup
+        register_rest_route('wpj/v1', '/release-seats', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rest_release_seats'],
+            'permission_callback' => '__return_true'
+        ]);
     }
     
     /**
@@ -215,17 +245,38 @@ class WPJ_Flight_Booking_Engine
         }
         
         // Get or create persistent session ID via cookie
-        if (isset($_COOKIE['wpj_session_id'])) {
-            $session_id = sanitize_text_field($_COOKIE['wpj_session_id']);
+        // Include user ID for logged-in users to ensure uniqueness
+        $user_id = get_current_user_id();
+        $cookie_name = 'wpj_session_id';
+        
+        if (isset($_COOKIE[$cookie_name]) && !empty($_COOKIE[$cookie_name])) {
+            $session_id = sanitize_text_field($_COOKIE[$cookie_name]);
         } else {
-            $session_id = 'session_' . wp_generate_password(32, false);
-            // Set cookie for 1 hour
-            setcookie('wpj_session_id', $session_id, time() + 3600, '/');
+            // Generate unique session ID
+            $unique_part = wp_generate_password(32, false);
+            $timestamp = time();
+            
+            // Include user ID if logged in for better tracking
+            if ($user_id > 0) {
+                $session_id = "user_{$user_id}_" . $unique_part;
+            } else {
+                $session_id = "guest_{$timestamp}_" . $unique_part;
+            }
+            
+            // Set cookie for 1 hour with security flags
+            setcookie($cookie_name, $session_id, [
+                'expires' => time() + 3600,
+                'path' => '/',
+                'secure' => is_ssl(),
+                'httponly' => true,
+                'samesite' => 'Lax'
+            ]);
         }
         
         $table = $wpdb->prefix . 'wpj_seat_reservations';
         
-        // CRITICAL: Delete old reservation for THIS session and flight first
+        // Delete old reservation for THIS session and flight ONLY
+        // This ensures User A's reservation is NOT affected by User B
         $wpdb->delete($table, [
             'flight_id' => $flight_id,
             'session_id' => $session_id
@@ -246,6 +297,9 @@ class WPJ_Flight_Booking_Engine
                 'message' => 'DB Error: ' . $wpdb->last_error
             ], 200);
         }
+        
+        // Log for debugging multi-user scenarios
+        error_log("[WPJ] Reservation created: Flight {$flight_id}, Session {$session_id}, Seats {$seats}");
         
         return new WP_REST_Response([
             'success' => true,
@@ -370,6 +424,7 @@ class WPJ_Flight_Booking_Engine
         wp_localize_script('hello-child-main', 'wpj_flight_obj', [
             'api_url' => esc_url_raw(rest_url('wpj/v1/flight-status')),
             'reserve_url' => esc_url_raw(rest_url('wpj/v1/reserve-seats')),
+            'release_url' => esc_url_raw(rest_url('wpj/v1/release-seats')), // Added for Beacon
             'nonce' => wp_create_nonce('wp_rest'),
             // NOTE: flight_id is now determined dynamically from form data
             'voucher' => $voucher_data, // Pass to JS
@@ -407,19 +462,38 @@ class WPJ_Flight_Booking_Engine
             return;
 
         $data = $this->get_flight_data($post_id);
+        $total = $data['total'];
+        $booked = $data['booked'];
+        $reserved = $data['reserved'];
         $available = $data['available'];
 
-        echo '<strong class="wpj-admin-capacity"
-                data-flight-id="' . esc_attr($post_id) . '"
-                data-last="' . esc_attr($available) . '">'
-            . esc_html($available) .
-            '</strong>';
+        // Color coding
+        $color = $available > 0 ? 'green' : 'red';
+        if($available == 0 && $reserved > 0) $color = 'orange';
+
+        echo "<div class='wpj-admin-capacity' 
+                   data-flight-id='" . esc_attr($post_id) . "'
+                   data-last='" . esc_attr($available) . "'>";
+        
+        // Main Big Number
+        echo "<span style='font-size:18px; color:{$color}; font-weight:bold;'>{$available}</span> <small>Available</small><br>";
+        
+        // Detailed Breakdown
+        echo "<span style='font-size:12px; color:#666;'>";
+        echo "Total: <strong>{$total}</strong> | ";
+        echo "Booked: <strong>{$booked}</strong>";
+        
+        if($reserved > 0) {
+            echo " | <span style='color:orange;'>Reserved: <strong>{$reserved}</strong></span>";
+        }
+        
+        echo "</span></div>";
     }
 
     public function ajax_admin_capacity()
     {
-        // Permission Check?
-        // if (!current_user_can('edit_posts')) wp_send_json_error();
+        // Permission Check
+        if (!current_user_can('edit_posts')) wp_send_json_error();
 
         $flight_id = absint($_POST['flight_id'] ?? 0);
         if (!$flight_id) {
@@ -428,7 +502,12 @@ class WPJ_Flight_Booking_Engine
 
         $data = $this->get_flight_data($flight_id);
 
+        ob_start();
+        $this->render_admin_columns('available_capacity', $flight_id);
+        $html = ob_get_clean();
+
         wp_send_json_success([
+            'html' => $html,
             'available' => $data['available']
         ]);
     }
@@ -460,14 +539,12 @@ class WPJ_Flight_Booking_Engine
                             .then(r => r.json())
                             .then(res => {
                                 if (!res.success) return;
-                                const available = parseInt(res.data.available, 10);
-                                if (available !== last) {
-                                    el.textContent = available;
-                                    el.dataset.last = available;
-
-                                    // Visual Flash
-                                    el.style.color = 'green';
-                                    setTimeout(() => el.style.color = '', 500);
+                                
+                                // Update HTML content directly for detailed view
+                                if(res.data.html) {
+                                     // Find parent td to replace content or update inner div
+                                     const parentTd = el.closest('td');
+                                     if(parentTd) parentTd.innerHTML = res.data.html;
                                 }
                             });
                     });
@@ -512,6 +589,71 @@ class WPJ_Flight_Booking_Engine
 
         // Validation passed, allow booking to proceed
         return $request;
+    }
+    
+    /* ======================================================
+       BOOKING COMPLETION CLEANUP
+    ====================================================== */
+    
+    /**
+     * Delete reservation after successful booking
+     * Triggered by JetBooking when a booking is inserted into the database
+     */
+    public function cleanup_reservation_after_booking($booking_id, $booking_data)
+    {
+        try {
+            global $wpdb;
+            
+            // Get flight ID from booking data
+            $flight_id = isset($booking_data['apartment_id']) ? absint($booking_data['apartment_id']) : 0;
+            
+            if (!$flight_id) {
+                return;
+            }
+            
+            // Try to get session ID from cookie (may not exist in all contexts)
+            $session_id = null;
+            if (isset($_COOKIE['wpj_session_id']) && !empty($_COOKIE['wpj_session_id'])) {
+                $session_id = sanitize_text_field($_COOKIE['wpj_session_id']);
+            }
+            
+            // If no session ID, try to get from user ID
+            if (!$session_id) {
+                $user_id = get_current_user_id();
+                if ($user_id > 0) {
+                    // Find any reservation for this user and flight
+                    $table = $wpdb->prefix . 'wpj_seat_reservations';
+                    $session_id = $wpdb->get_var($wpdb->prepare(
+                        "SELECT session_id FROM {$table} WHERE flight_id = %d AND session_id LIKE %s LIMIT 1",
+                        $flight_id,
+                        'user_' . $user_id . '_%'
+                    ));
+                }
+            }
+            
+            if (!$session_id) {
+                error_log("[WPJ] Could not find session ID for cleanup after booking #{$booking_id}");
+                return;
+            }
+            
+            // Delete the reservation for this session and flight
+            $table = $wpdb->prefix . 'wpj_seat_reservations';
+            
+            $deleted = $wpdb->delete($table, [
+                'flight_id' => $flight_id,
+                'session_id' => $session_id
+            ]);
+            
+            // Log for debugging
+            if ($deleted) {
+                error_log("[WPJ] Deleted reservation for flight {$flight_id}, session {$session_id} after booking #{$booking_id}");
+            } else {
+                error_log("[WPJ] No reservation found to delete for flight {$flight_id}, session {$session_id}");
+            }
+        } catch (\Exception $e) {
+            // Log error but don't break the booking process
+            error_log("[WPJ] Error in cleanup_reservation_after_booking: " . $e->getMessage());
+        }
     }
 }
 

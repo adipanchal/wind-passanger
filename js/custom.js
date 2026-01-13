@@ -431,13 +431,13 @@ jQuery(document).ready(function ($) {
         },
         success: function (res) {
           if (res.success) {
-            wpjLog(`Reserved ${res.reserved} seats. Expires in ${res.expires_in}s`);
+            wpjLog(`✅ Reserved ${res.reserved} seats. Expires in ${res.expires_in}s`);
             reservationExpiry = Date.now() + (res.expires_in * 1000);
 
             // Show reservation confirmation
             const { $msg } = getElements();
             if ($msg.length) {
-              $msg.text(`🔒 ${seats} ${texts.reserved} (5 min hold)`)
+              $msg.text(`🔒 ${seats} ${texts.reserved} (10 min hold)`)
                 .css({
                   color: "#0c5460",
                   "background-color": "#d1ecf1",
@@ -446,13 +446,17 @@ jQuery(document).ready(function ($) {
                 }).show();
             }
           } else {
-            wpjLog("Reservation failed: " + res.message);
+            wpjLog("❌ Reservation failed: " + res.message);
+            console.error("Full API Response:", res);
             // Refresh availability
             checkAvailability(flightId);
           }
         },
         error: function (xhr, status, error) {
-          wpjLog("Reserve API Error: " + error);
+          wpjLog("❌ Reserve API Error: " + error);
+          console.error("XHR:", xhr);
+          console.error("Status:", status);
+          console.error("Response Text:", xhr.responseText);
         }
       });
     }, 500);
@@ -568,5 +572,109 @@ jQuery(document).ready(function ($) {
     if (flightId) {
       checkAvailability(flightId);
     }
+  });
+  
+  // ==========================================
+  // 6. Booking Button Handler & Cleanup Logic
+  // ==========================================
+  
+  let isBooking = false; // Flag to prevent cleanup during booking
+  
+  /**
+   * Release seats synchronously (for booking button)
+   */
+  function releaseSeatsSync(flightId) {
+    if (!flightId) return;
+    
+    wpjLog("Releasing hold for booking submission...");
+    
+    // Synchronous AJAX to ensure it completes before form submits
+    $.ajax({
+      url: wpj_flight_obj.release_url,
+      method: "POST",
+      async: false, // MUST be synchronous
+      data: {
+        flight_id: flightId,
+        _wpnonce: wpj_flight_obj.nonce
+      },
+      success: function(res) {
+        wpjLog("✅ Hold released for booking");
+      },
+      error: function(xhr, status, error) {
+        wpjLog("⚠️ Could not release hold: " + error);
+      }
+    });
+  }
+  
+  /**
+   * Release on actual tab close (Beacon API)
+   */
+  function releaseOnExit() {
+    // Don't release if user is in booking process
+    if (isBooking) {
+      wpjLog("Skipping cleanup - booking in progress");
+      return;
+    }
+    
+    if (!currentFlightId || !reservationExpiry) return;
+
+    wpjLog("Tab closing - releasing hold via Beacon");
+
+    // Use sendBeacon if available (reliable for unload)
+    if (navigator.sendBeacon) {
+      const data = new FormData();
+      data.append('flight_id', currentFlightId);
+      data.append('_wpnonce', wpj_flight_obj.nonce);
+      
+      const success = navigator.sendBeacon(wpj_flight_obj.release_url, data);
+      if(success) wpjLog("✅ Beacon sent for cleanup");
+    } else {
+      // Fallback for older browsers
+      $.ajax({
+        url: wpj_flight_obj.release_url,
+        method: "POST",
+        async: false, // Blocking call (deprecated but needed for fallback)
+        data: {
+          flight_id: currentFlightId,
+          _wpnonce: wpj_flight_obj.nonce
+        }
+      });
+    }
+  }
+
+  // ==========================================
+  // Booking Form Submit Handler
+  // ==========================================
+  $(document).on('submit', '.flight-booking-form, form[data-form-id]', function(e) {
+    const $form = $(this);
+    const $input = $form.find('input[name="unit_number"]');
+    
+    // Only process if this form has our booking input
+    if (!$input.length) return;
+    
+    wpjLog("📝 Booking form submitted");
+    
+    // Set booking flag
+    isBooking = true;
+    
+    // Release hold synchronously before form submits
+    if (currentFlightId && reservationExpiry) {
+      releaseSeatsSync(currentFlightId);
+      
+      // Clear reservation tracking
+      reservationExpiry = null;
+    }
+  });
+
+  // ==========================================
+  // Tab Close Detection (ONLY on actual close)
+  // ==========================================
+  
+  // Use pagehide (more reliable than beforeunload)
+  window.addEventListener('pagehide', releaseOnExit);
+  
+  // Fallback for older browsers
+  window.addEventListener('beforeunload', function(e) {
+    releaseOnExit();
   });
 });
