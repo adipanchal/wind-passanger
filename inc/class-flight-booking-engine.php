@@ -408,26 +408,12 @@ class WPJ_Flight_Booking_Engine
      */
     public function localize_scripts()
     {
-        // 1. Check for Voucher in URL
-        $voucher_data = false;
-        if (!empty($_GET['voucher_id'])) {
-            $voucher_id = absint($_GET['voucher_id']);
-            $passengers = (int) get_post_meta($voucher_id, 'voucher_passengers', true);
-            if ($passengers > 0) {
-                $voucher_data = [
-                    'id' => $voucher_id,
-                    'passengers' => $passengers
-                ];
-            }
-        }
-
         wp_localize_script('hello-child-main', 'wpj_flight_obj', [
             'api_url' => esc_url_raw(rest_url('wpj/v1/flight-status')),
             'reserve_url' => esc_url_raw(rest_url('wpj/v1/reserve-seats')),
             'release_url' => esc_url_raw(rest_url('wpj/v1/release-seats')), // Added for Beacon
             'nonce' => wp_create_nonce('wp_rest'),
             // NOTE: flight_id is now determined dynamically from form data
-            'voucher' => $voucher_data, // Pass to JS
             'texts' => [
                 'locked' => __('Locked by Voucher', 'hello-elementor-child'),
                 'seats_left' => __('seats available', 'hello-elementor-child'),

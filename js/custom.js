@@ -1,11 +1,7 @@
 jQuery(document).ready(function ($) {
-  // Debug helper
-  function wpjLog(msg) {
-    console.log("[WPJ-Flight]", msg);
-  }
+
 
   if (typeof wpj_flight_obj === "undefined") {
-    wpjLog("Error: wpj_flight_obj not found. Script localized incorrectly?");
     return;
   }
 
@@ -14,7 +10,7 @@ jQuery(document).ready(function ($) {
   let pollInterval = 3000;
   let idleTimer = null;
   let pollTimer = null;
-  let isLockedByVoucher = false;
+
   let currentFlightId = null; // Dynamic flight ID
   let reservationTimer = null; // Timer for debouncing reservation calls
   let reservationExpiry = null; // Timestamp when reservation expires
@@ -28,34 +24,50 @@ jQuery(document).ready(function ($) {
   function getFlightIdFromForm($form) {
     let flightId = null;
 
-    // Try multiple common field names
-    const possibleNames = ['flight_id', 'post_id', 'ticket_id', 'ticket_title', 'apartment_id'];
-
+    // 1. Try direct hidden field with numeric value only
+    const possibleNames = ['flight_id', 'post_id', 'ticket_id', 'apartment_id', '__queried_post_id', 'stay'];
     for (const name of possibleNames) {
       const val = $form.find(`input[name="${name}"]`).val();
-      if (val) {
+      if (val && /^\d+$/.test(val)) { // Only if purely numeric
         flightId = val;
-        wpjLog(`Found flight ID in field "${name}": ${val}`);
         break;
       }
     }
 
-    // Try data attribute
+    // 2. Try ticket_title field - may contain "tickets/24531" format
+    if (!flightId) {
+      const ticketTitle = $form.find('input[name="ticket_title"]').val();
+      if (ticketTitle) {
+        // Extract numeric ID from patterns like "tickets/24531" or just "24531"
+        const match = ticketTitle.match(/(\d+)/);
+        if (match) {
+          flightId = match[1];
+        }
+      }
+    }
+
+    // 3. Try popup parent container data attributes
+    if (!flightId) {
+      const $popup = $form.closest('.jet-popup, [data-popup-id], .elementor-popup-modal');
+      if ($popup.length) {
+        flightId = $popup.data('post-id') || $popup.data('flight-id') || $popup.attr('data-post-id');
+      }
+    }
+
+    // 4. Try form data attribute
     if (!flightId) {
       flightId = $form.data('flight-id') || $form.data('post-id');
     }
 
-    // Try URL params
+    // 5. Try URL params as last resort
     if (!flightId) {
       const urlParams = new URLSearchParams(window.location.search);
       flightId = urlParams.get('flight_id') || urlParams.get('post_id');
     }
 
-    // Log all hidden inputs for debugging
+    // Debug: Log all hidden inputs if not found
     if (!flightId) {
-      wpjLog("Could not find flight ID. Hidden inputs in form:");
       $form.find('input[type="hidden"]').each(function () {
-        wpjLog(`  - ${$(this).attr('name')}: ${$(this).val()}`);
       });
     }
 
@@ -95,41 +107,7 @@ jQuery(document).ready(function ($) {
     return { $input, $msg, $shortcode: $(".wpj-live-seats-count") };
   }
 
-  // ==========================================
-  // 1. Voucher Mode Logic (Run Validation)
-  // ==========================================
-  function applyVoucherLock() {
-    const voucherData = wpj_flight_obj.voucher;
-    const { $input, $msg } = getElements();
 
-    if (voucherData && voucherData.passengers) {
-      isLockedByVoucher = true;
-      const seatsNeeded = parseInt(voucherData.passengers, 10);
-
-      if ($input.length) {
-        $input
-          .val(seatsNeeded)
-          .attr("readonly", true)
-          .attr("max", seatsNeeded)
-          .attr("min", seatsNeeded)
-          .addClass("locked-by-voucher")
-          .css({
-            "background-color": "#f0f0f0",
-            cursor: "not-allowed",
-            "border-color": "#ccc",
-          });
-      }
-
-      if ($msg.length) {
-        $msg.text(`🔒 ${texts.locked} (${seatsNeeded})`).css("color", "#333");
-      }
-      return true;
-    }
-    return false;
-  }
-
-  // Initial Attempt
-  applyVoucherLock();
 
   // ==========================================
   // 2. Real-time Polling & Validation
@@ -152,7 +130,6 @@ jQuery(document).ready(function ($) {
         }
       },
       error: function (xhr, status, error) {
-        wpjLog("API Error: " + error);
       },
     });
   }
@@ -172,55 +149,6 @@ jQuery(document).ready(function ($) {
     }
 
     // B. Validation & Locking Logic
-    if (isLockedByVoucher) {
-      // Voucher Mode: ENFORCE LOCK & VALIDATE
-      const voucherData = wpj_flight_obj.voucher;
-      const seatsNeeded = parseInt(voucherData.passengers, 10);
-
-      // 1. Enforce Lock State (Every poll, in case DOM reset)
-      if ($input.length && !$input.hasClass("locked-by-voucher")) {
-        $input
-          .val(seatsNeeded)
-          .attr("readonly", true)
-          .attr("max", seatsNeeded)
-          .attr("min", seatsNeeded)
-          .addClass("locked-by-voucher")
-          .css({
-            "background-color": "#f0f0f0",
-            cursor: "not-allowed",
-            "border-color": "#ccc",
-          });
-
-        // Ensure value is correct (if form reset somehow)
-        if (parseInt($input.val()) !== seatsNeeded) {
-          $input.val(seatsNeeded);
-        }
-      }
-
-      // 2. Validate Availability
-      if (seatsNeeded > availableSeats) {
-        const errText = `🚫 ${texts.no_seats} (Needs ${seatsNeeded})`;
-        if ($msg.length) $msg.text(errText).css("color", "red");
-        if ($input.length) {
-          $input
-            .closest("form")
-            .find('button[type="submit"]')
-            .prop("disabled", true);
-        }
-      } else {
-        // Valid State in Voucher Mode
-        if ($msg.length)
-          $msg.text(`🔒 ${texts.locked} (${seatsNeeded})`).css("color", "#333");
-        if ($input.length) {
-          $input
-            .closest("form")
-            .find('button[type="submit"]')
-            .prop("disabled", false);
-        }
-      }
-      return;
-    }
-
     // --- NORMAL MODE ---
     if ($input.length) {
       $input.attr("max", availableSeats);
@@ -265,7 +193,6 @@ jQuery(document).ready(function ($) {
     const flightId = getFlightIdFromForm($form);
 
     if (flightId) {
-      wpjLog(`User focused on booking form for Flight ID: ${flightId}`);
       checkAvailability(flightId);
     }
   });
@@ -275,7 +202,7 @@ jQuery(document).ready(function ($) {
     "input change keyup",
     "#unit_number, input[name='unit_number']",
     function () {
-      if (isLockedByVoucher) return;
+
 
       const val = parseInt($(this).val(), 10) || 0;
       const $input = $(this);
@@ -414,12 +341,11 @@ jQuery(document).ready(function ($) {
   // ==========================================
 
   function reserveSeats(flightId, seats) {
-    if (!flightId || seats < 1 || isLockedByVoucher) return;
+    if (!flightId || seats < 1) return;
 
     // Debounce: Wait 500ms before calling API
     clearTimeout(reservationTimer);
     reservationTimer = setTimeout(() => {
-      wpjLog(`Reserving ${seats} seats for flight ${flightId}...`);
 
       $.ajax({
         url: reserve_url,
@@ -431,32 +357,15 @@ jQuery(document).ready(function ($) {
         },
         success: function (res) {
           if (res.success) {
-            wpjLog(`✅ Reserved ${res.reserved} seats. Expires in ${res.expires_in}s`);
+            // Silently update expiry
             reservationExpiry = Date.now() + (res.expires_in * 1000);
-
-            // Show reservation confirmation
-            const { $msg } = getElements();
-            if ($msg.length) {
-              $msg.text(`🔒 ${seats} ${texts.reserved} (10 min hold)`)
-                .css({
-                  color: "#0c5460",
-                  "background-color": "#d1ecf1",
-                  "font-weight": "bold",
-                  "border-left": "4px solid #17a2b8"
-                }).show();
-            }
           } else {
-            wpjLog("❌ Reservation failed: " + res.message);
-            console.error("Full API Response:", res);
-            // Refresh availability
+            // Silently refresh availability on failure
             checkAvailability(flightId);
           }
         },
         error: function (xhr, status, error) {
-          wpjLog("❌ Reserve API Error: " + error);
-          console.error("XHR:", xhr);
-          console.error("Status:", status);
-          console.error("Response Text:", xhr.responseText);
+          // Silent error handling
         }
       });
     }, 500);
@@ -465,7 +374,6 @@ jQuery(document).ready(function ($) {
   function releaseSeats(flightId) {
     if (!flightId) return;
 
-    wpjLog(`Releasing reservation for flight ${flightId}...`);
 
     $.ajax({
       url: release_url,
@@ -475,11 +383,9 @@ jQuery(document).ready(function ($) {
         _wpnonce: wpj_flight_obj.nonce
       },
       success: function (res) {
-        wpjLog("Reservation released");
         reservationExpiry = null;
       },
       error: function (xhr, status, error) {
-        wpjLog("Release API Error: " + error);
       }
     });
   }
@@ -490,7 +396,7 @@ jQuery(document).ready(function ($) {
     const $localInput = $(this).find("#unit_number, input[name='unit_number']");
     if (!$localInput.length) return;
 
-    if (isLockedByVoucher) return;
+
 
     const currentVal = parseInt($localInput.val(), 10) || 0;
     if (currentVal > availableSeats) {
@@ -507,36 +413,10 @@ jQuery(document).ready(function ($) {
   // ==========================================
 
   // MutationObserver: Watch for input appearing in DOM
-  if (wpj_flight_obj.voucher) {
-    wpjLog("Voucher Mode: Starting MutationObserver...");
-    const observer = new MutationObserver(function (mutations) {
-      const $input = $('input[name="unit_number"]:visible');
-      if ($input.length && !$input.hasClass("locked-by-voucher")) {
-        wpjLog("MutationObserver: Found unlocked input! Locking now...");
-        const seatsNeeded = parseInt(wpj_flight_obj.voucher.passengers, 10);
-        $input
-          .val(seatsNeeded)
-          .attr("readonly", true)
-          .attr("max", seatsNeeded)
-          .attr("min", seatsNeeded)
-          .addClass("locked-by-voucher")
-          .css({
-            "background-color": "#f0f0f0",
-            cursor: "not-allowed",
-            "border-color": "#ccc",
-          });
-      }
-    });
 
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-  }
 
   // JetPopup event handler
   $(document).on("jet-popup/show-event", function (e, popupData) {
-    wpjLog("JetPopup show-event triggered!");
     // Force immediate check
     setTimeout(() => {
       // Find any unit_number inputs in the newly opened popup
@@ -545,18 +425,16 @@ jQuery(document).ready(function ($) {
         const $form = $(this).closest('form');
         const flightId = getFlightIdFromForm($form);
         if (flightId) {
-          wpjLog(`Checking availability for Flight ID: ${flightId}`);
           checkAvailability(flightId);
         }
       });
 
-      applyVoucherLock();
+
     }, 100);
   });
 
   // JetPopup close handler - release reservation
   $(document).on("jet-popup/hide-event", function (e, popupData) {
-    wpjLog("JetPopup hide-event triggered - releasing reservation...");
     if (currentFlightId) {
       releaseSeats(currentFlightId);
     }
@@ -573,21 +451,20 @@ jQuery(document).ready(function ($) {
       checkAvailability(flightId);
     }
   });
-  
+
   // ==========================================
   // 6. Booking Button Handler & Cleanup Logic
   // ==========================================
-  
+
   let isBooking = false; // Flag to prevent cleanup during booking
-  
+
   /**
    * Release seats synchronously (for booking button)
    */
   function releaseSeatsSync(flightId) {
     if (!flightId) return;
-    
-    wpjLog("Releasing hold for booking submission...");
-    
+
+
     // Synchronous AJAX to ensure it completes before form submits
     $.ajax({
       url: wpj_flight_obj.release_url,
@@ -597,37 +474,32 @@ jQuery(document).ready(function ($) {
         flight_id: flightId,
         _wpnonce: wpj_flight_obj.nonce
       },
-      success: function(res) {
-        wpjLog("✅ Hold released for booking");
+      success: function (res) {
       },
-      error: function(xhr, status, error) {
-        wpjLog("⚠️ Could not release hold: " + error);
+      error: function (xhr, status, error) {
       }
     });
   }
-  
+
   /**
    * Release on actual tab close (Beacon API)
    */
   function releaseOnExit() {
     // Don't release if user is in booking process
     if (isBooking) {
-      wpjLog("Skipping cleanup - booking in progress");
       return;
     }
-    
+
     if (!currentFlightId || !reservationExpiry) return;
 
-    wpjLog("Tab closing - releasing hold via Beacon");
 
     // Use sendBeacon if available (reliable for unload)
     if (navigator.sendBeacon) {
       const data = new FormData();
       data.append('flight_id', currentFlightId);
       data.append('_wpnonce', wpj_flight_obj.nonce);
-      
+
       const success = navigator.sendBeacon(wpj_flight_obj.release_url, data);
-      if(success) wpjLog("✅ Beacon sent for cleanup");
     } else {
       // Fallback for older browsers
       $.ajax({
@@ -645,22 +517,21 @@ jQuery(document).ready(function ($) {
   // ==========================================
   // Booking Form Submit Handler
   // ==========================================
-  $(document).on('submit', '.flight-booking-form, form[data-form-id]', function(e) {
+  $(document).on('submit', '.flight-booking-form, form[data-form-id]', function (e) {
     const $form = $(this);
     const $input = $form.find('input[name="unit_number"]');
-    
+
     // Only process if this form has our booking input
     if (!$input.length) return;
-    
-    wpjLog("📝 Booking form submitted");
-    
+
+
     // Set booking flag
     isBooking = true;
-    
+
     // Release hold synchronously before form submits
     if (currentFlightId && reservationExpiry) {
       releaseSeatsSync(currentFlightId);
-      
+
       // Clear reservation tracking
       reservationExpiry = null;
     }
@@ -669,12 +540,12 @@ jQuery(document).ready(function ($) {
   // ==========================================
   // Tab Close Detection (ONLY on actual close)
   // ==========================================
-  
+
   // Use pagehide (more reliable than beforeunload)
   window.addEventListener('pagehide', releaseOnExit);
-  
+
   // Fallback for older browsers
-  window.addEventListener('beforeunload', function(e) {
+  window.addEventListener('beforeunload', function (e) {
     releaseOnExit();
   });
 });
