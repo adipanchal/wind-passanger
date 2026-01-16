@@ -42,8 +42,25 @@ class Voucher_Form_Filler {
 		$accommodation_status = get_post_meta( $voucher_id, '_accommodation-status', true );
 		if ( '' === $accommodation_status ) $accommodation_status = get_post_meta( $voucher_id, 'accommodation-status', true );
 
-		// 4. Output Javascript
+		// 4. Output Javascript & CSS
 		?>
+        <style>
+            /* Force readonly look and behavior for voucher fields */
+            .voucher-apply-field {
+                pointer-events: none !important;
+                background-color: #f5f5f5 !important;
+                border: 1px solid #ddd !important;
+                color: #777 !important;
+                cursor: not-allowed !important;
+            }
+            /* Specifically for inputs to ensure override */
+            input.voucher-apply-field, 
+            select.voucher-apply-field, 
+            textarea.voucher-apply-field {
+                background-color: #f5f5f5 !important;
+                color: #777 !important;
+            }
+        </style>
 		<script type="text/javascript">
 			document.addEventListener('DOMContentLoaded', function() {
 				const voucherData = {
@@ -61,10 +78,14 @@ class Voucher_Form_Filler {
 					const field = form.querySelector(`[name="${name}"]`);
 					if (field) {
 						field.value = value;
+                        // Add class and readonly attribute
+                        field.classList.add('voucher-apply-field');
+                        field.setAttribute('readonly', 'readonly');
+                        
 						field.dispatchEvent(new Event('input', { bubbles: true }));
 						field.dispatchEvent(new Event('change', { bubbles: true }));
 						
-						// Trigger jQuery events if available (crucial for custom.js)
+						// Trigger jQuery events if available
 						if (window.jQuery) {
 							window.jQuery(field).trigger('input').trigger('change').trigger('keyup');
 						}
@@ -73,6 +94,18 @@ class Voucher_Form_Filler {
 
 				// Function to fill fields
 				const fillFields = (form) => {
+                    // 0. LOCK ANY EXISTING FIELDS with the class
+                    const existingLocked = form.querySelectorAll('.voucher-apply-field');
+                    existingLocked.forEach(el => {
+                        el.setAttribute('readonly', 'readonly');
+                        el.setAttribute('tabindex', '-1');
+                        if (el.tagName === 'SELECT') {
+                            // Selects don't support readonly, use disabled or CSS pointer-events
+                             el.style.pointerEvents = 'none';
+                             el.style.backgroundColor = '#f5f5f5';
+                        }
+                    });
+
 					// 1. Fill Unit Number (Passengers)
 					setField(form, 'unit_number', voucherData.passengers);
 
@@ -91,19 +124,27 @@ class Voucher_Form_Filler {
 					// 6. Fill Accommodation Status
 					setField(form, 'accommodation-status', voucherData.accommodation_status);
 				};
-
+                
 				// Observer to wait for Popup/Form to appear in DOM
 				const observer = new MutationObserver((mutations) => {
 					for (const mutation of mutations) {
 						for (const node of mutation.addedNodes) {
 							if (node.nodeType === 1) { // Element
 								// Check if the node itself is the form or contains the form
-								// Broad check for inputs first to save processing.
-								if (node.querySelector('[name="form_voucher_code"]') || node.querySelector('[name="voucher_id"]')) {
+								// Check for ANY inputs relevant to us
+								if (node.querySelector('[name="form_voucher_code"]') || node.querySelector('[name="voucher_id"]') || node.querySelector('.voucher-apply-field')) {
 									const form = node.closest('form') || node.querySelector('form');
 									if (form) {
                                         // Slight delay to ensure other scripts allow the change
-                                        setTimeout(() => fillFields(form), 50);
+                                        setTimeout(() => fillFields(form), 100);
+                                        
+                                        // SECURITY: Force verify lock for 3 seconds to prevent overrides
+                                        let attempts = 0;
+                                        const enforcer = setInterval(() => {
+                                            fillFields(form);
+                                            attempts++;
+                                            if (attempts > 15) clearInterval(enforcer);
+                                        }, 200);
                                     }
 								}
 							}

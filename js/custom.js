@@ -409,28 +409,81 @@ jQuery(document).ready(function ($) {
   });
 
   // ==========================================
-  // 4. JetPopup Integration + MutationObserver
+  // 4. Popup Detection - Multiple Methods for Reliability
   // ==========================================
 
-  // MutationObserver: Watch for input appearing in DOM
+  // METHOD 1: MutationObserver - Detects when form becomes visible
+  const observer = new MutationObserver(function (mutations) {
+    mutations.forEach(function (mutation) {
+      // Check if any nodes were added
+      mutation.addedNodes.forEach(function (node) {
+        if (node.nodeType === 1) { // Element node
+          // Check if this node or its children contain our input
+          const $node = $(node);
+          const $inputs = $node.find('input[name="unit_number"]').add($node.filter('input[name="unit_number"]'));
 
+          $inputs.each(function () {
+            const $input = $(this);
+            const $form = $input.closest('form');
+            const flightId = getFlightIdFromForm($form);
 
-  // JetPopup event handler
-  $(document).on("jet-popup/show-event", function (e, popupData) {
-    // Force immediate check
+            if (flightId && $input.is(':visible')) {
+              // Create status message immediately
+              let $msg = $input.siblings("#wpj-flight-status");
+              if (!$msg.length) {
+                $input.after(
+                  '<span id="wpj-flight-status" style="display:block; margin-top:8px; font-weight:bold; font-size:14px; padding:8px; border-radius:4px; background:#f8f9fa;"></span>'
+                );
+                $msg = $input.siblings("#wpj-flight-status");
+              }
+
+              $msg.text("Checking availability...").css({
+                "color": "#666",
+                "background-color": "#f8f9fa"
+              }).show();
+
+              // Fetch availability
+              checkAvailability(flightId);
+            }
+          });
+        }
+      });
+    });
+  });
+
+  // Start observing the body for added nodes
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  // METHOD 2: JetPopup events (backup)
+  $(document).on("jet-popup/show-event jet-popup/open-event elementor/popup/show", function (e, popupData) {
     setTimeout(() => {
-      // Find any unit_number inputs in the newly opened popup
       const $visibleInputs = $('input[name="unit_number"]:visible');
       $visibleInputs.each(function () {
-        const $form = $(this).closest('form');
+        const $input = $(this);
+        const $form = $input.closest('form');
         const flightId = getFlightIdFromForm($form);
+
         if (flightId) {
+          let $msg = $input.siblings("#wpj-flight-status");
+          if (!$msg.length) {
+            $input.after(
+              '<span id="wpj-flight-status" style="display:block; margin-top:8px; font-weight:bold; font-size:14px; padding:8px; border-radius:4px; background:#f8f9fa;"></span>'
+            );
+            $msg = $input.siblings("#wpj-flight-status");
+          }
+
+          $msg.text("Checking availability...").css({
+            "color": "#666",
+            "background-color": "#f8f9fa"
+          }).show();
+
           checkAvailability(flightId);
         }
       });
-
-
-    }, 100);
+    }, 200); // Increased timeout
   });
 
   // JetPopup close handler - release reservation
@@ -549,55 +602,55 @@ jQuery(document).ready(function ($) {
     releaseOnExit();
   });
 });
-  // ==========================================
-  // Dynamic passenger Title generate
 // ==========================================
-  (function () {
-    // 1. The Core Function: Updates titles based on row index
-    function updatePassengerTitles(container) {
-        if (!container) return;
+// Dynamic passenger Title generate
+// ==========================================
+(function () {
+  // 1. The Core Function: Updates titles based on row index
+  function updatePassengerTitles(container) {
+    if (!container) return;
 
-        const rows = container.querySelectorAll('.jet-form-builder-repeater__row');
-        rows.forEach((row, index) => {
-            let title = row.querySelector('.passenger-title');
+    const rows = container.querySelectorAll('.jet-form-builder-repeater__row');
+    rows.forEach((row, index) => {
+      let title = row.querySelector('.passenger-title');
 
-            if (!title) {
-                title = document.createElement('h2');
-                title.className = 'wp-block-heading passenger-title';
-                title.style.marginBottom = '10px';
-                row.prepend(title);
-            }
-            title.textContent = 'Passenger ' + (index + 1);
-        });
-    }
-
-    // 2. The Observer: Re-runs logic when rows are added/removed
-    function attachRepeaterObserver(container) {
-        if (!container || container.dataset.observed === '1') return;
-        
-        container.dataset.observed = '1';
-        const observer = new MutationObserver(() => updatePassengerTitles(container));
-        observer.observe(container, { childList: true });
-        
-        // Run once immediately on attach
-        updatePassengerTitles(container);
-    }
-
-    // 3. The Unified Listener: Handles Normal Page AND Popups
-    // JetFormBuilder triggers this whenever a form is initialized
-    jQuery(document).on('jet-form-builder/after-init', function(event, $scope) {
-        // Find all repeaters within the initialized form
-        const repeaters = $scope[0].querySelectorAll('.jet-form-builder-repeater__items');
-        
-        repeaters.forEach(container => {
-            attachRepeaterObserver(container);
-        });
+      if (!title) {
+        title = document.createElement('h2');
+        title.className = 'wp-block-heading passenger-title';
+        title.style.marginBottom = '10px';
+        row.prepend(title);
+      }
+      title.textContent = 'Passenger ' + (index + 1);
     });
+  }
 
-    // 4. Fallback: For cases where the form might already be there
-    document.addEventListener('DOMContentLoaded', function () {
-        const repeaters = document.querySelectorAll('.jet-form-builder-repeater__items');
-        repeaters.forEach(container => attachRepeaterObserver(container));
+  // 2. The Observer: Re-runs logic when rows are added/removed
+  function attachRepeaterObserver(container) {
+    if (!container || container.dataset.observed === '1') return;
+
+    container.dataset.observed = '1';
+    const observer = new MutationObserver(() => updatePassengerTitles(container));
+    observer.observe(container, { childList: true });
+
+    // Run once immediately on attach
+    updatePassengerTitles(container);
+  }
+
+  // 3. The Unified Listener: Handles Normal Page AND Popups
+  // JetFormBuilder triggers this whenever a form is initialized
+  jQuery(document).on('jet-form-builder/after-init', function (event, $scope) {
+    // Find all repeaters within the initialized form
+    const repeaters = $scope[0].querySelectorAll('.jet-form-builder-repeater__items');
+
+    repeaters.forEach(container => {
+      attachRepeaterObserver(container);
     });
+  });
+
+  // 4. Fallback: For cases where the form might already be there
+  document.addEventListener('DOMContentLoaded', function () {
+    const repeaters = document.querySelectorAll('.jet-form-builder-repeater__items');
+    repeaters.forEach(container => attachRepeaterObserver(container));
+  });
 
 })();
