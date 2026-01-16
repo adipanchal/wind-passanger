@@ -24,8 +24,10 @@ class WPJ_Flight_Booking_Engine
 
     public function __construct()
     {
-        // Database Setup - Create table immediately
+        // Database Setup - Create tables immediately
         $this->maybe_create_reservations_table();
+        $this->maybe_create_availability_table();
+        
         add_filter('cron_schedules', [$this, 'add_cron_interval']);
         
         // Schedule cleanup cron if not already scheduled
@@ -49,8 +51,17 @@ class WPJ_Flight_Booking_Engine
         add_action('wp_ajax_wpj_admin_capacity', [$this, 'ajax_admin_capacity']);
         add_action('admin_footer', [$this, 'admin_footer_script']);
         
+        // Admin Tools Menu for Rebuilding Availability
+        add_action('admin_menu', [$this, 'add_rebuild_menu_page']);
+        
         // JetFormBuilder Validation (Prevent Race Condition)
         add_filter('jet-form-builder/custom-action/before-send', [$this, 'validate_booking_availability'], 10, 2);
+        
+        // AUTO-SYNC AVAILABILITY: Cron-based (reliable, runs every 5 minutes)
+        if (!wp_next_scheduled('wpj_sync_availability_cron')) {
+            wp_schedule_event(time(), 'wpj_five_minutes', 'wpj_sync_availability_cron');
+        }
+        add_action('wpj_sync_availability_cron', [$this, 'cron_sync_all_availability']);
         
         // Booking Completion Cleanup - DISABLED (causes critical errors)
         // Cron cleanup handles expired reservations reliably
@@ -64,6 +75,10 @@ class WPJ_Flight_Booking_Engine
         $schedules['every_minute'] = [
             'interval' => 60,
             'display'  => __('Every Minute')
+        ];
+        $schedules['wpj_five_minutes'] = [
+            'interval' => 300, // 5 minutes
+            'display'  => __('Every 5 Minutes')
         ];
         return $schedules;
     }
@@ -116,6 +131,209 @@ class WPJ_Flight_Booking_Engine
         if ($deleted > 0) {
             error_log("[WPJ Cron] Deleted {$deleted} expired reservations (Total before: {$count_before})");
         }
+    }
+    
+    // ==========================================
+    // AVAILABILITY TABLE & SYNC SYSTEM
+    // ==========================================
+    
+    /**
+     * Create dedicated availability table
+     */
+    public function maybe_create_availability_table() {
+        global $wpdb;
+        
+        $table_name = $wpdb->prefix . 'wpj_flight_availability';
+        
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name) {
+            return;
+        }
+        
+        $charset_collate = $wpdb->get_charset_collate();
+        
+        $sql = "CREATE TABLE $table_name (
+            flight_id BIGINT(20) UNSIGNED NOT NULL,
+            total_seats INT(11) NOT NULL DEFAULT 0,
+            booked_seats INT(11) NOT NULL DEFAULT 0,
+            available_seats INT(11) NOT NULL DEFAULT 0,
+            last_updated DATETIME NOT NULL,
+            PRIMARY KEY (flight_id),
+            KEY available_seats (available_seats)
+        ) $charset_collate;";
+        
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+    }
+    
+    /**
+     * CRON JOB: Sync all flight availability (runs every 5 minutes)
+     * This is 100% reliable - no dependency on hooks
+     */
+    public function cron_sync_all_availability() {
+        global $wpdb;
+        
+        $availability_table = $wpdb->prefix . 'wpj_flight_availability';
+        $units_table = $wpdb->prefix . 'jet_apartment_units';
+        $bookings_table = $wpdb->prefix . 'jet_apartment_bookings';
+        
+        // Get all unique flight IDs
+        $flight_ids = $wpdb->get_col("SELECT DISTINCT apartment_id FROM $units_table");
+        
+        $updated_count = 0;
+        foreach ($flight_ids as $flight_id) {
+            // Count total
+            $total = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM $units_table WHERE apartment_id = %d",
+                $flight_id
+            ));
+            
+            // Count booked
+            $booked = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM $bookings_table 
+                 WHERE apartment_id = %d 
+                 AND status IN ('pending', 'processing', 'completed', 'wc-pending', 'wc-processing', 'wc-completed')",
+                $flight_id
+            ));
+            
+            // Calculate available
+            $available = max(0, $total - $booked);
+            
+            // Update table
+            $wpdb->replace($availability_table, [
+                'flight_id' => $flight_id,
+                'total_seats' => $total,
+                'booked_seats' => $booked,
+                'available_seats' => $available,
+                'last_updated' => current_time('mysql')
+            ]);
+            
+            // Update post meta for JetEngine compatibility
+            update_post_meta($flight_id, '_jc_capacity', $available);
+            
+            $updated_count++;
+        }
+        
+        if ($updated_count > 0) {
+            error_log("[WPJ Cron Sync] Updated availability for {$updated_count} flights");
+        }
+    }
+    
+    /**
+     * Add Tools menu page for rebuilding
+     */
+    public function add_rebuild_menu_page() {
+        add_management_page(
+            'Rebuild Flight Availability',
+            'Rebuild Flights',
+            'manage_options',
+            'wpj-rebuild-flights',
+            [$this, 'render_rebuild_page']
+        );
+    }
+    
+    /**
+     * Render the rebuild page
+     */
+    public function render_rebuild_page() {
+        global $wpdb;
+        $table = $wpdb->prefix . 'wpj_flight_availability';
+        ?>
+        <div class="wrap">
+            <h1>Rebuild Flight Availability</h1>
+            <p>This will rebuild both the <code><?php echo $table; ?></code> table and <code>_jc_capacity</code> post meta for all flights.</p>
+            
+            <form method="post">
+                <?php wp_nonce_field('wpj_rebuild', 'wpj_nonce'); ?>
+                <p>
+                    <button type="submit" name="wpj_rebuild" class="button button-primary button-hero">
+                        Rebuild All Flights Now
+                    </button>
+                </p>
+            </form>
+            
+            <?php
+            if (isset($_POST['wpj_rebuild']) && wp_verify_nonce($_POST['wpj_nonce'], 'wpj_rebuild')) {
+                $count = $this->rebuild_all_flights();
+                echo '<div class="notice notice-success"><p>';
+                echo sprintf('<strong>✅ Success!</strong> Rebuilt data for <strong>%d flights</strong>.', $count);
+                echo '</p></div>';
+            }
+            
+            // Show current data
+            $flights = $wpdb->get_results("SELECT * FROM $table ORDER BY available_seats ASC LIMIT 10");
+            if ($flights) {
+                echo '<h3>Current Data (First 10 flights):</h3>';
+                echo '<table class="wp-list-table widefat fixed striped">';
+                echo '<thead><tr><th>Flight ID</th><th>Total</th><th>Booked</th><th>Available</th><th>Meta Value</th><th>Last Updated</th></tr></thead>';
+                echo '<tbody>';
+                foreach ($flights as $row) {
+                    $meta = get_post_meta($row->flight_id, '_jc_capacity', true);
+                    echo '<tr>';
+                    echo '<td>' . $row->flight_id . '</td>';
+                    echo '<td>' . $row->total_seats . '</td>';
+                    echo '<td>' . $row->booked_seats . '</td>';
+                    echo '<td><strong>' . $row->available_seats . '</strong></td>';
+                    echo '<td>' . ($meta !== '' ? $meta : '<em>Not set</em>') . '</td>';
+                    echo '<td>' . $row->last_updated . '</td>';
+                    echo '</tr>';
+                }
+                echo '</tbody></table>';
+            } else {
+                echo '<p><em>No data yet. Click "Rebuild" to populate.</em></p>';
+            }
+            ?>
+        </div>
+        <?php
+    }
+    
+    /**
+     * Rebuild all flights
+     */
+    public function rebuild_all_flights() {
+        global $wpdb;
+        
+        $availability_table = $wpdb->prefix . 'wpj_flight_availability';
+        $units_table = $wpdb->prefix . 'jet_apartment_units';
+        $bookings_table = $wpdb->prefix . 'jet_apartment_bookings';
+        
+        // Clear existing data
+        $wpdb->query("TRUNCATE TABLE $availability_table");
+        
+        // Get all unique flight IDs
+        $flight_ids = $wpdb->get_col("SELECT DISTINCT apartment_id FROM $units_table");
+        
+        foreach ($flight_ids as $flight_id) {
+            // Count total
+            $total = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM $units_table WHERE apartment_id = %d",
+                $flight_id
+            ));
+            
+            // Count booked
+            $booked = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM $bookings_table 
+                 WHERE apartment_id = %d 
+                 AND status IN ('pending', 'processing', 'completed', 'wc-pending', 'wc-processing', 'wc-completed')",
+                $flight_id
+            ));
+            
+            // Calculate available
+            $available = max(0, $total - $booked);
+            
+            // Insert into table
+            $wpdb->replace($availability_table, [
+                'flight_id' => $flight_id,
+                'total_seats' => $total,
+                'booked_seats' => $booked,
+                'available_seats' => $available,
+                'last_updated' => current_time('mysql')
+            ]);
+            
+            // ALSO update post meta
+            update_post_meta($flight_id, '_jc_capacity', $available);
+        }
+        
+        return count($flight_ids);
     }
     
     /**
@@ -641,7 +859,82 @@ class WPJ_Flight_Booking_Engine
             error_log("[WPJ] Error in cleanup_reservation_after_booking: " . $e->getMessage());
         }
     }
+    
+    // ==========================================
+    // AVAILABLE SEATS HELPERS (Safe Access Layer)
+    // ==========================================
+    
+    /**
+     * Get available seats for a specific flight from the table
+     * 
+     * @param int $flight_id The flight/apartment post ID
+     * @return int|null Available seats count, or null if not found
+     */
+    public static function get_available_seats($flight_id) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'wpj_flight_availability';
+        
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT available_seats FROM $table WHERE flight_id = %d",
+            $flight_id
+        ));
+        
+        return $result !== null ? (int)$result : null;
+    }
+    
+    /**
+     * Get full availability data for a flight
+     * 
+     * @param int $flight_id The flight/apartment post ID
+     * @return object|null Object with total_seats, booked_seats, available_seats, last_updated
+     */
+    public static function get_flight_availability_data($flight_id) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'wpj_flight_availability';
+        
+        return $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $table WHERE flight_id = %d",
+            $flight_id
+        ));
+    }
+    
+    /**
+     * Shortcode to display available seats
+     * Usage: [wpj_available_seats id="123"]
+     * 
+     * @param array $atts Shortcode attributes
+     * @return string HTML output
+     */
+    public function shortcode_available_seats($atts) {
+        $atts = shortcode_atts([
+            'id' => 0,
+            'format' => '{available} seats available', // Can customize: "{available}/{total} available"
+            'class' => 'wpj-seat-count'
+        ], $atts);
+        
+        $flight_id = absint($atts['id']);
+        if (!$flight_id) {
+            return '';
+        }
+        
+        $data = self::get_flight_availability_data($flight_id);
+        if (!$data) {
+            return '';
+        }
+        
+        // Replace placeholders
+        $output = str_replace(
+            ['{available}', '{total}', '{booked}'],
+            [$data->available_seats, $data->total_seats, $data->booked_seats],
+            $atts['format']
+        );
+        
+        return sprintf('<span class="%s">%s</span>', esc_attr($atts['class']), esc_html($output));
+    }
 }
 
 // Initialize
 WPJ_Flight_Booking_Engine::instance();
+
+// Register the shortcode globally for easy access
+add_shortcode('wpj_available_seats', [WPJ_Flight_Booking_Engine::instance(), 'shortcode_available_seats']);
