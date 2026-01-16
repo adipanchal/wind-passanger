@@ -13,6 +13,7 @@
 
 
 require_once get_stylesheet_directory() . '/inc/class-flight-booking-engine.php';
+require_once get_stylesheet_directory() . '/inc/class-voucher-form-filler.php';
 
 if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
