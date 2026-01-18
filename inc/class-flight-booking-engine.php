@@ -57,11 +57,19 @@ class WPJ_Flight_Booking_Engine
         // JetFormBuilder Validation (Prevent Race Condition)
         add_filter('jet-form-builder/custom-action/before-send', [$this, 'validate_booking_availability'], 10, 2);
         
-        // AUTO-SYNC AVAILABILITY: Cron-based (reliable, runs every 5 minutes)
-        if (!wp_next_scheduled('wpj_sync_availability_cron')) {
-            wp_schedule_event(time(), 'wpj_five_minutes', 'wpj_sync_availability_cron');
-        }
-        add_action('wpj_sync_availability_cron', [$this, 'cron_sync_all_availability']);
+        // INSTANT UPDATE: Disabled temporarily to fix critical error
+        // Will re-enable after finding correct hook
+        // add_action('jet-booking/db/booking-inserted', [$this, 'instant_update_availability'], 10, 2);
+        // add_action('jet-booking/db/booking-updated', [$this, 'instant_update_availability'], 10, 2);
+        // add_action('woocommerce_payment_complete', [$this, 'instant_update_from_order'], 10, 1);
+        // add_action('woocommerce_order_status_completed', [$this, 'instant_update_from_order'], 10, 1);
+        // add_action('woocommerce_order_status_processing', [$this, 'instant_update_from_order'], 10, 1);
+        // add_action('jet-form-builder/form-handler/after-send', [$this, 'instant_update_from_form'], 10, 2);
+        // add_action('save_post', [$this, 'instant_update_from_post'], 10, 2);
+        
+        // AUTO-INIT: When a flight is saved/published, auto-set _jc_capacity
+        add_action('save_post_tickets', [$this, 'auto_init_capacity_on_save'], 20, 2);
+        add_action('save_post_apartment', [$this, 'auto_init_capacity_on_save'], 20, 2);
         
         // Booking Completion Cleanup - DISABLED (causes critical errors)
         // Cron cleanup handles expired reservations reliably
@@ -166,21 +174,152 @@ class WPJ_Flight_Booking_Engine
     }
     
     /**
-     * CRON JOB: Sync all flight availability (runs every 5 minutes)
-     * This is 100% reliable - no dependency on hooks
+     * AUTO-INIT: Set _jc_capacity when a new flight is saved/published
+     * This ensures new flights show up in filters immediately
      */
-    public function cron_sync_all_availability() {
-        global $wpdb;
+    public function auto_init_capacity_on_save($post_id, $post) {
+        // Prevent infinite loops
+        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+            return;
+        }
         
-        $availability_table = $wpdb->prefix . 'wpj_flight_availability';
+        // Only for published posts
+        if ($post->post_status !== 'publish') {
+            return;
+        }
+        
+        global $wpdb;
         $units_table = $wpdb->prefix . 'jet_apartment_units';
         $bookings_table = $wpdb->prefix . 'jet_apartment_bookings';
         
-        // Get all unique flight IDs
-        $flight_ids = $wpdb->get_col("SELECT DISTINCT apartment_id FROM $units_table");
+        // Count total capacity from apartment_units
+        $total = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $units_table WHERE apartment_id = %d",
+            $post_id
+        ));
         
-        $updated_count = 0;
-        foreach ($flight_ids as $flight_id) {
+        // Count booked
+        $booked = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $bookings_table 
+             WHERE apartment_id = %d 
+             AND status IN ('pending', 'processing', 'completed', 'wc-pending', 'wc-processing', 'wc-completed')",
+            $post_id
+        ));
+        
+        // Calculate available
+        $available = max(0, $total - $booked);
+        
+        // Update post meta
+        update_post_meta($post_id, '_jc_capacity', $available);
+        
+        // Update availability table
+        $availability_table = $wpdb->prefix . 'wpj_flight_availability';
+        $wpdb->replace($availability_table, [
+            'flight_id' => $post_id,
+            'total_seats' => $total,
+            'booked_seats' => $booked,
+            'available_seats' => $available,
+            'last_updated' => current_time('mysql')
+        ]);
+    }
+    
+    /**
+     * INSTANT UPDATE: When JetBooking fires
+     */
+    public function instant_update_availability($booking_id, $booking) {
+        try {
+            error_log("[WPJ INSTANT] JetBooking hook fired - ID: {$booking_id}");
+            
+            $flight_id = 0;
+            if (is_array($booking) && !empty($booking['apartment_id'])) {
+                $flight_id = $booking['apartment_id'];
+            } elseif (is_object($booking) && !empty($booking->apartment_id)) {
+                $flight_id = $booking->apartment_id;
+            }
+            
+            if ($flight_id) {
+                $this->update_single_flight_availability($flight_id);
+            }
+        } catch (Exception $e) {
+            error_log("[WPJ INSTANT] Error in JetBooking hook: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * INSTANT UPDATE: When WooCommerce order completes
+     */
+    public function instant_update_from_order($order_id) {
+        try {
+            // Check if WooCommerce is active
+            if (!function_exists('wc_get_order')) {
+                return;
+            }
+            
+            error_log("[WPJ INSTANT] WooCommerce hook fired - Order: {$order_id}");
+            
+            $order = wc_get_order($order_id);
+            if (!$order) return;
+            
+            // Extract flight ID from order meta or items
+            foreach ($order->get_items() as $item) {
+                $product_id = $item->get_product_id();
+                $flight_id = get_post_meta($product_id, '_apartment_id', true);
+                
+                if ($flight_id) {
+                    $this->update_single_flight_availability($flight_id);
+                }
+            }
+        } catch (Exception $e) {
+            error_log("[WPJ INSTANT] Error in WooCommerce hook: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * INSTANT UPDATE: When JetFormBuilder form submits
+     */
+    public function instant_update_from_form($form_data, $handler) {
+        try {
+            error_log("[WPJ INSTANT] JetFormBuilder hook fired");
+            
+            // Try to extract flight ID from form data
+            if (!empty($form_data['post_id'])) {
+                $this->update_single_flight_availability($form_data['post_id']);
+            }
+            if (!empty($form_data['flight_id'])) {
+                $this->update_single_flight_availability($form_data['flight_id']);
+            }
+            if (!empty($form_data['apartment_id'])) {
+                $this->update_single_flight_availability($form_data['apartment_id']);
+            }
+        } catch (Exception $e) {
+            error_log("[WPJ INSTANT] Error in JetFormBuilder hook: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * INSTANT UPDATE: When any post saves (last resort)
+     */
+    public function instant_update_from_post($post_id, $post) {
+        try {
+            // Only log, don't process (too noisy)
+            if ($post->post_type === 'jet-booking') {
+                error_log("[WPJ INSTANT] Post save detected - Type: jet-booking, ID: {$post_id}");
+            }
+        } catch (Exception $e) {
+            error_log("[WPJ INSTANT] Error in save_post hook: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Core update function: Updates availability for ONE flight
+     */
+    private function update_single_flight_availability($flight_id) {
+        try {
+            global $wpdb;
+            
+            $units_table = $wpdb->prefix . 'jet_apartment_units';
+            $bookings_table = $wpdb->prefix . 'jet_apartment_bookings';
+            
             // Count total
             $total = (int) $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM $units_table WHERE apartment_id = %d",
@@ -198,7 +337,11 @@ class WPJ_Flight_Booking_Engine
             // Calculate available
             $available = max(0, $total - $booked);
             
-            // Update table
+            // Update post meta IMMEDIATELY
+            update_post_meta($flight_id, '_jc_capacity', $available);
+            
+            // Also update table (for consistency)
+            $availability_table = $wpdb->prefix . 'wpj_flight_availability';
             $wpdb->replace($availability_table, [
                 'flight_id' => $flight_id,
                 'total_seats' => $total,
@@ -207,14 +350,9 @@ class WPJ_Flight_Booking_Engine
                 'last_updated' => current_time('mysql')
             ]);
             
-            // Update post meta for JetEngine compatibility
-            update_post_meta($flight_id, '_jc_capacity', $available);
-            
-            $updated_count++;
-        }
-        
-        if ($updated_count > 0) {
-            error_log("[WPJ Cron Sync] Updated availability for {$updated_count} flights");
+            error_log("[WPJ INSTANT] Updated flight {$flight_id}: Total={$total}, Booked={$booked}, Available={$available}");
+        } catch (Exception $e) {
+            error_log("[WPJ INSTANT] Error updating flight {$flight_id}: " . $e->getMessage());
         }
     }
     
@@ -403,6 +541,23 @@ class WPJ_Flight_Booking_Engine
         }
 
         $available = max(0, $total_seats - $booked_seats - $reserved_seats);
+
+        // AUTO-SYNC: Update meta field and table while we have the data
+        // This ensures availability is always fresh whenever it's checked
+        $persistent_available = max(0, $total_seats - $booked_seats); // Don't count reserved for filtering
+        
+        // Update post meta (for JetEngine filters)
+        update_post_meta($flight_id, '_jc_capacity', $persistent_available);
+        
+        // Update availability table (for custom queries)
+        $availability_table = $wpdb->prefix . 'wpj_flight_availability';
+        $wpdb->replace($availability_table, [
+            'flight_id' => $flight_id,
+            'total_seats' => $total_seats,
+            'booked_seats' => $booked_seats,
+            'available_seats' => $persistent_available,
+            'last_updated' => current_time('mysql')
+        ]);
 
         return [
             'total' => $total_seats,
