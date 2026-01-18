@@ -107,10 +107,11 @@ function wp_coupon_sync_script() {
                 return 0; // Default if not found
             }
 
-            $('.flight-booking-form').on('change input', '#coupon_code', function() {
+            // Delegate to body to support Popups and AJAX loaded forms
+            $(document.body).on('change input', '.flight-booking-form #coupon_code', function() {
                 var couponCode = $(this).val();
                 var $field = $(this);
-                var $form = $(this).closest('.flight-booking-form');
+                var $form = $(this).closest('form'); // More robust than class selector
                 
                 // If code is empty, reset discount
                 if (!couponCode) {
