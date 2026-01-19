@@ -97,9 +97,3 @@ function hello_child_enqueue_scripts()
     );
 }
 add_action('wp_enqueue_scripts', 'hello_child_enqueue_scripts');
-
-
-
-// End of child theme functions
-// Custom functionality is now loaded via inc/ modules required above.
-

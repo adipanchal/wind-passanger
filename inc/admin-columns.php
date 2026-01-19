@@ -41,3 +41,42 @@ function jet_engine_custom_cb_user_email($value, $args = [])
 
     return $user ? esc_html($user->user_email) : '';
 }
+
+// ===========================
+// Callback: Term ID → Term Name (Admin Column)
+// ===========================
+add_action( 'admin_enqueue_scripts', function () {
+
+    $screen = get_current_screen();
+    
+    // Only load on your CPT list page
+    // Relaxed check: Allow on any post list page to ensure it loads for 'reservation-record' (or variations)
+    // The JS has safety checks so it won't break other pages.
+    if ( empty( $screen->post_type ) ) {
+        return;
+    }
+
+    wp_enqueue_script(
+        'jetengine-admin-tax-fix',
+        get_stylesheet_directory_uri() . '/js/jetengine-admin-tax-fetch.js',
+        [ 'jquery' ],
+        '1.0',
+        true
+    );
+
+    // Pass taxonomy data to JS
+    wp_localize_script(
+        'jetengine-admin-tax-fix',
+        'JetTaxMap',
+        [
+            'flightType' => get_terms( [
+                'taxonomy'   => 'flight-type',
+                'hide_empty' => false,
+            ] ),
+            'location' => get_terms( [
+                'taxonomy'   => 'flight-location',
+                'hide_empty' => false,
+            ] ),
+        ]
+    );
+});
