@@ -97,3 +97,38 @@ function hello_child_enqueue_scripts()
     );
 }
 add_action('wp_enqueue_scripts', 'hello_child_enqueue_scripts');
+
+/**
+ * Custom Logout Button - Instant Logout
+ */
+// 1. Server-Side: Filter the logout URL globally
+add_filter( 'logout_url', function( $logout_url, $redirect ) {
+    if ( empty( $redirect ) ) {
+        $logout_url = add_query_arg( 'redirect_to', home_url('/'), $logout_url );
+    }
+    return html_entity_decode( $logout_url );
+}, 10, 2 );
+
+// 2. Client-Side: Fallback script for hardcoded links
+add_action('wp_footer', function () {
+    if ( is_user_logged_in() ) : ?>
+        <script>
+        (function() {
+            const logoutUrl = "<?php echo html_entity_decode( esc_url( wp_logout_url( home_url('/') ) ) ); ?>";
+
+            document.addEventListener('click', function(e) {
+                const target = e.target;
+                const link = target.closest('a[href*="logout"]');
+                const btn = target.closest('.logout-btn');
+                
+                if (link || btn) {
+                   e.preventDefault();
+                   e.stopPropagation();
+                   console.log('Force Logout Redirect');
+                   window.location.href = logoutUrl;
+                }
+            }, true); 
+        })();
+        </script>
+    <?php endif;
+}, 99);

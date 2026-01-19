@@ -427,9 +427,15 @@ class WPJ_Flight_Booking_Engine
             'permission_callback' => '__return_true', // Public
             'args' => [
                 'flight_id' => [
-                    'required' => true,
+                    'required' => false,
                     'validate_callback' => function ($param) {
                         return is_numeric($param);
+                    }
+                ],
+                'flight_ids' => [
+                    'required' => false,
+                    'validate_callback' => function ($param) {
+                        return is_string($param);
                     }
                 ]
             ]
@@ -613,16 +619,63 @@ class WPJ_Flight_Booking_Engine
      */
     public function rest_get_flight_status($request)
     {
-        $flight_id = $request->get_param('flight_id');
-        $data = $this->get_flight_data($flight_id);
+        // Support for Batching (Comma separated IDs)
+        $flight_ids_param = $request->get_param('flight_ids');
+        $flight_ids = [];
 
-        return new WP_REST_Response([
-            'flight_id' => $flight_id,
-            'total' => $data['total'],
-            'booked' => $data['booked'],
-            'available' => $data['available'],
-            'timestamp' => time()
-        ], 200);
+        if (!empty($flight_ids_param)) {
+            $flight_ids = array_map('absint', explode(',', $flight_ids_param));
+        } else {
+            // Fallback to single ID
+            $fid = $request->get_param('flight_id');
+            if ($fid) $flight_ids[] = absint($fid);
+        }
+
+        $response = [];
+        $today_ts = strtotime(current_time('Y-m-d')); // Today at 00:00:00
+
+        foreach ($flight_ids as $flight_id) {
+            if (!$flight_id) continue;
+
+            $data = $this->get_flight_data($flight_id);
+            
+            // Check Expiry
+            $is_expired = false;
+            $flight_date = get_post_meta($flight_id, 'flight_date', true);
+            if (empty($flight_date)) {
+                 $flight_date = get_post_meta($flight_id, '_check_in_date', true);
+            }
+
+            if ($flight_date) {
+                $flight_ts = is_numeric($flight_date) ? $flight_date : strtotime($flight_date);
+                if ($flight_ts < $today_ts) {
+                    $is_expired = true;
+                }
+            }
+
+            $response[$flight_id] = [
+                'flight_id' => $flight_id,
+                'total' => $data['total'],
+                'booked' => $data['booked'],
+                'available' => $data['available'],
+                'is_expired' => $is_expired,
+                'timestamp' => time()
+            ];
+        }
+
+        // If single ID requested individually (old method), return single object context for backward compat
+        // BUT better to just return the list/map if multiple requested.
+        // If 'flight_ids' was passed, return map. If 'flight_id', return single.
+        if (!empty($flight_ids_param)) {
+            return new WP_REST_Response([
+                'success' => true,
+                'data' => $response
+            ], 200);
+        }
+
+        // Backward compatibility for single ID
+        $single_data = reset($response);
+        return new WP_REST_Response($single_data, 200);
     }
 
     /**
