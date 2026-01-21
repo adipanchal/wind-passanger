@@ -5,18 +5,6 @@
 add_action('template_redirect', function () {
 
     /* -------------------------------------------------
-     * REDIRECT RULE
-     * /schedule-flight/ → /flights/
-     * ------------------------------------------------- */
-    if (
-        is_page('schedule-flight') &&
-        empty($_GET)
-    ) {
-        wp_safe_redirect(home_url('/flights/'), 302);
-        exit;
-    }
-
-    /* -------------------------------------------------
      * USER MUST BE LOGGED IN
      * ------------------------------------------------- */
     // if (!is_user_logged_in()) {

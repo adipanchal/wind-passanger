@@ -21,7 +21,6 @@ require_once get_stylesheet_directory() . '/inc/jet-engine-bridge.php';
 require_once get_stylesheet_directory() . '/inc/admin-columns.php';
 require_once get_stylesheet_directory() . '/inc/flight-filters.php';
 require_once get_stylesheet_directory() . '/inc/checkout-auth.php';
-
 require_once get_stylesheet_directory() . '/inc/my-account-filter.php';
 require_once get_stylesheet_directory() . '/inc/class-jet-booking-sync.php';
 
