@@ -13,3 +13,127 @@ Tags: flexible-header, custom-colors, custom-menu, custom-logo, editor-style, fe
 */
 
 /* Add your custom styles here */
+/*========================== 
+ Ticket Booking popup Form Style 
+==========================*/
+
+.flight-booking-form .flight-info-sec {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 15px !important;
+    background-color: #ffee6f;
+    color: var(--e-global-color-primary) !important;
+    text-transform: uppercase !important;
+}
+
+.flight-booking-form .flight-date {
+    font-size: 26px;
+    font-weight: 900;
+}
+
+.flight-booking-form .flight-time,
+.flight-booking-form .flight-location {
+    display: flex;
+    justify-content: center;
+    gap: 3px !important;
+    font-weight: 700;
+}
+
+.flight-booking-form .jet-form-builder-repeater__row .passenger-title {
+    margin: 0;
+}
+
+.flight-booking-form .jet-form-builder-repeater__row .passenger-title {
+    text-transform: uppercase !important;
+    max-width: 100% !important;
+    font-size: 14px !important;
+    color: var(--e-global-color-secondary) !important;
+}
+
+.flight-booking-form .passenger-details-field {
+    gap: 15px !important;
+    row-gap: 10px !important;
+}
+
+.flight-booking-form .passenger-details-field .jet-form-builder-row {
+    width: calc(50% - (15px / 2));
+}
+
+.flight-booking-form .passenger-details-field .jet-form-builder-row.field-type-textarea-field {
+    width: 100% !important;
+}
+
+.flight-booking-form .jet-form-builder-row {
+    margin: 0 !important;
+}
+
+.flight-booking-form .jet-form-builder__required {
+    font-size: 18px !important;
+}
+
+.flight-booking-form .passenger-details-field .jet-form-builder-row,
+.flight-booking-form .jet-form-builder__conditional {
+    width: calc(50% - (15px / 2));
+}
+
+.flight-booking-form .jet-form-builder__conditional .jet-form-builder-row {
+    width: 100% !important;
+}
+
+.wp-container-core-group-is-layout-0e82c502 .field-type-date-field,
+.flight-booking-form [data-update-field-name="discount_amount"] {
+    display: none;
+}
+
+
+.flight-booking-form .flight-info-sec.b-2 .jet-form-builder-row {
+    flex-direction: row !important;
+}
+
+.flight-booking-form .flight-type {
+    gap: 12px;
+}
+
+.flight-booking-form .flight-type {
+    font-weight: 700;
+}
+
+/*Style For tablet*/
+@media (max-width: 1024px) {
+
+    .flight-booking-form .flight-info-sec,
+    .flight-booking-form .flight-info-sec.b-2 {
+        border-radius: 20px !important;
+        padding: 20px !important;
+    }
+
+    .flight-booking-form .flight-info-sec.b-2 {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+/*Style For Mobile*/
+@media (max-width: 767px) {
+
+    .flight-booking-form .flight-info-sec,
+    .flight-booking-form .flight-info-sec.b-2 {
+        grid-template-columns: 1fr !important;
+        border-radius: 20px !important;
+        padding: 20px !important;
+    }
+
+    .flight-booking-form .flight-date {
+        text-align: center !important;
+        justify-content: center;
+    }
+
+    .flight-booking-form .passenger-details-field .jet-form-builder-row,
+    .flight-booking-form .jet-form-builder__conditional {
+        width: 100% !important;
+    }
+
+    .flight-booking-form .flight-type {
+        justify-content: center;
+        text-align: center;
+    }
+}
