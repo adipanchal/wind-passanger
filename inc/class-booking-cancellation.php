@@ -1,212 +1,162 @@
 <?php
 /**
- * Booking Cancellation Handler
- * Handles Admin and Frontend cancellation, refunding coupons, and notifying users.
+ * Handles grouped booking cancellations.
+ * When one booking is cancelled, find all related bookings in the same group and cancel them too.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-class Booking_Cancellation_Handler {
+error_log('GroupCancellation: File Loaded Successfully');
+
+class Booking_Cancellation {
 
     public function __construct() {
-        // Admin Columns
-        add_filter( 'manage_tickets_posts_columns', [ $this, 'add_cancel_column' ] );
-        add_action( 'manage_tickets_posts_custom_column', [ $this, 'render_cancel_column' ], 10, 2 );
-
-        // AJAX Handler
-        add_action( 'wp_ajax_cancel_booking', [ $this, 'handle_cancellation' ] );
-        add_action( 'wp_ajax_nopriv_cancel_booking', [ $this, 'handle_cancellation' ] ); // For frontend users
-
-        // Inject JS for Admin
-        add_action( 'admin_footer', [ $this, 'admin_footer_scripts' ] );
+        // Hook into database queries to catch direct updates
+        add_filter( 'query', [ $this, 'monitor_booking_updates' ] );
     }
-
+    
     /**
-     * Add "Cancel" Column to Tickets CPT
+     * Monitor raw SQL queries for booking status updates
+     * This is necessary because JetBooking updates the database directly
      */
-    public function add_cancel_column( $columns ) {
-        $columns['cancel_booking'] = 'Cancellation';
-        return $columns;
-    }
-
-    /**
-     * Render Button in Admin Column
-     */
-    public function render_cancel_column( $column, $post_id ) {
-        if ( 'cancel_booking' === $column ) {
-            $status = get_post_status( $post_id );
+    public function monitor_booking_updates( $query ) {
+        global $wpdb;
+        
+        // Only check UPDATE queries on the bookings table
+        $table_name = $wpdb->prefix . 'jet_apartment_bookings';
+        
+        if ( strpos( $query, 'UPDATE' ) === 0 && strpos( $query, $table_name ) !== false ) {
+            error_log( "GroupCancellation: Database UPDATE detected: " . $query );
             
-            if ( 'trash' === $status || 'cancelled' === $status ) {
-                echo '<span style="color:red; font-weight:bold;">Cancelled</span>';
-            } else {
-                echo '<button type="button" class="button button-small wpj-cancel-btn" data-id="' . esc_attr( $post_id ) . '" style="color: #b32d2e; border-color: #b32d2e;">Cancel Booking</button>';
+            // Extract booking_id and status from the query
+            // Pattern: UPDATE wp_jet_apartment_bookings SET `status` = 'cancelled' WHERE `booking_id` = '423'
+            // Account for optional backticks and quotes
+            if ( preg_match( "/`?status`?\s*=\s*['\"]?(cancelled|refunded)['\"]?/i", $query, $status_match ) &&
+                 preg_match( "/`?booking_id`?\s*=\s*['\"]?(\d+)['\"]?/i", $query, $id_match ) ) {
+                
+                $booking_id = (int) $id_match[1];
+                $new_status = $status_match[1];
+                
+                error_log( "GroupCancellation: Detected cancellation - Booking ID: $booking_id, Status: $new_status" );
+                
+                // Trigger the group cancellation logic
+                $this->handle_group_cancellation( $booking_id, null, [ 'status' => $new_status ] );
             }
         }
+        
+        return $query;
     }
 
     /**
-     * Handle AJAX Cancellation
+     * Handle cascading cancellation for grouped bookings
+     * ... existing handle_group_cancellation code ...
      */
-    public function handle_cancellation() {
-        check_ajax_referer( 'wpj_cancel_nonce', 'security' );
-
-        $post_id = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
-        $reason  = isset( $_POST['reason'] ) ? sanitize_textarea_field( $_POST['reason'] ) : '';
-
-        if ( ! $post_id ) {
-            wp_send_json_error( 'Invalid Booking ID' );
+    public function handle_group_cancellation( $booking_id, $booking, $data ) {
+        
+        // --- 1. DEBUG: Log Everything ---
+        error_log( "GroupCancellation: HOOK FIRED for Booking ID: $booking_id" );
+        // error_log( "GroupCancellation: Incoming Data: " . print_r( $data, true ) );
+        
+        // 2. Check Loop Protection
+        if ( wp_cache_get( 'processing_group_cancellation_' . $booking_id ) ) {
+            error_log( "GroupCancellation: Skipping $booking_id (Already Processing)" );
+            return;
         }
 
-        // Permission Check
-        $is_admin = current_user_can( 'edit_posts' );
-        $is_owner = get_current_user_id() === (int) get_post_field( 'post_author', $post_id );
-
-        if ( ! $is_admin && ! $is_owner ) {
-           wp_send_json_error( 'Permission Denied' );
+        // 3. Status Check
+        $new_status = isset( $data['status'] ) ? $data['status'] : '';
+        if ( ! in_array( $new_status, ['cancelled', 'refunded'] ) ) {
+            error_log( "GroupCancellation: Status '$new_status' is not a cancellation. Ignoring." );
+            return;
         }
 
-        // Time Check for Frontend Users (72 Hours)
-        if ( ! $is_admin ) {
-            $flight_date_str = get_post_meta( $post_id, 'flight_date', true ); // Adjust meta key as needed
-            // If flight date logic exists, check generic 72h rule
-            // Assuming flight_date is Y-m-d or timestamp. If meta is missing, strictly deny or allow based on policy.
+        error_log( "GroupCancellation: Valid Cancellation detected. Searching for parent Reservation Record..." );
+
+        // 4. Find the Reservation Record (CPT) for this booking
+        // We look for the CPT that contains this booking_id in its 'booking_ids' array.
+        // Since it's serialized, we use LIKE.
+        $reservation_posts = get_posts([
+            'post_type'  => 'reservation_record',
+            'meta_query' => [
+                [
+                    'key'     => 'booking_ids',
+                    'value'   => '"' . $booking_id . '"', // Search for likely serialized format "123"
+                    'compare' => 'LIKE' 
+                ]
+            ],
+            'posts_per_page' => 1,
+            'fields'         => 'ids',
+        ]);
+        
+        // Fallback search (just the number)
+        if ( empty( $reservation_posts ) ) {
+            error_log("GroupCancellation: Search 1 (Serialized) failed. Trying simple LIKE search...");
+            $reservation_posts = get_posts([
+                'post_type'  => 'reservation_record',
+                'meta_query' => [
+                    [
+                        'key'     => 'booking_ids',
+                        'value'   => $booking_id,
+                        'compare' => 'LIKE' 
+                    ]
+                ],
+                'posts_per_page' => 1,
+                'fields'         => 'ids',
+            ]);
+        }
+
+        if ( empty( $reservation_posts ) ) {
+            error_log( "GroupCancellation: FAILED. No parent reservation record found for booking $booking_id" );
+            return;
+        }
+
+        $post_id = $reservation_posts[0];
+        error_log( "GroupCancellation: SUCCESS. Found parent post $post_id. Retrieving group..." );
+
+        // 5. Get all Booking IDs in this group
+        $group_booking_ids = get_post_meta( $post_id, 'booking_ids', true );
+        error_log( "GroupCancellation: Group IDs found: " . print_r($group_booking_ids, true) );
+        
+        if ( empty( $group_booking_ids ) || ! is_array( $group_booking_ids ) ) {
+            error_log( "GroupCancellation: Invalid booking_ids meta for post $post_id" );
+            return;
+        }
+
+        // Filter out the current one
+        $siblings = array_diff( $group_booking_ids, [ $booking_id ] );
+
+        if ( empty( $siblings ) ) {
+            error_log( "GroupCancellation: No siblings to cancel. (Single booking group)" ); 
+            // Still update CPT status though!
+        } else {
+            error_log( "GroupCancellation: Found siblings to cancel: " . implode( ', ', $siblings ) );
+        }
+
+        // 6. Cancel Siblings
+        foreach ( $siblings as $sibling_id ) {
             
-            if ( $flight_date_str ) {
-                $flight_time = strtotime( $flight_date_str );
-                $current_time = time();
-                $diff_hours = ( $flight_time - $current_time ) / 3600;
-
-                if ( $diff_hours < 72 ) {
-                    wp_send_json_error( 'Cancellation is only allowed 72 hours before the flight/booking.' );
-                }
-            }
+            // Mark as processing to prevent infinite loop when we update it
+            wp_cache_set( 'processing_group_cancellation_' . $sibling_id, true );
+            
+            // Update JetBooking status directly in DB
+            jet_abaf()->db->update_booking( $sibling_id, [
+                'status' => $new_status 
+            ] );
+            
+            error_log( "GroupCancellation: Auto-cancelled sibling booking $sibling_id" );
         }
 
-        // 1. Process Refund (Coupons)
-        $this->process_coupon_refund( $post_id );
-
-        // 2. Process Refund (Voucher - Logic Placeholder as per request)
-        // $this->process_voucher_refund( $post_id );
-
-        // 3. Trash Post
-        wp_trash_post( $post_id );
-
-        // 4. Send Email
-        $this->send_cancellation_email( $post_id, $reason );
-
-        wp_send_json_success( 'Booking Cancelled and Refunded Successfully' );
-    }
-
-    /**
-     * Restore Coupon Usage and Credit
-     */
-    private function process_coupon_refund( $post_id ) {
-        if ( ! class_exists( 'WC_Coupon' ) ) return;
-
-        $coupon_code = get_post_meta( $post_id, 'coupon_code', true );
-        $discount_amount = (float) get_post_meta( $post_id, 'discount_amount', true );
-
-        if ( ! $coupon_code ) return;
-
-        $coupon = new WC_Coupon( $coupon_code );
-        if ( ! $coupon->get_id() ) return;
-
-        // Decrease Usage Count
-        // Standard WC doesn't have a direct "decrease" method, so we set manually
-        $current_usage = $coupon->get_usage_count();
-        if ( $current_usage > 0 ) {
-            $coupon->set_usage_count( $current_usage - 1 );
-        }
-
-        // Refund Store Credit (Smart Coupons)
-        // If the coupon amount was reduced, we add it back.
-        // We assume we tracked 'discount_amount' (the amount USED).
-        if ( $discount_amount > 0 ) {
-            $current_val = (float) $coupon->get_amount();
-            $coupon->set_amount( $current_val + $discount_amount );
-        }
-
-        $coupon->save();
-    }
-
-    /**
-     * Send Notification Email
-     */
-    private function send_cancellation_email( $post_id, $reason ) {
-        $to = get_post_meta( $post_id, 'passenger_email', true ); // Meta Key might vary
-        if ( ! $to ) {
-            // Fallback: Author email
-            $author_id = get_post_field( 'post_author', $post_id );
-            $author = get_userdata( $author_id );
-            if ( $author ) {
-                $to = $author->user_email;
-            }
-        }
-
-        if ( ! $to ) return;
-
-        $subject = 'Booking Cancelled - Ticket #' . $post_id;
-        $message = "Your booking (Ticket #$post_id) has been cancelled.\n\n";
-        $message .= "Reason: " . $reason . "\n\n";
-        $message .= "Any used coupons or vouchers have been returned to your account.\n";
-        $message .= "Regards,\nWind Passenger Team";
-
-        wp_mail( $to, $subject, $message );
-    }
-
-    /**
-     * Admin Footer JS
-     */
-    public function admin_footer_scripts() {
-        $screen = get_current_screen();
-        if ( 'tickets' !== $screen->post_type ) return;
-        ?>
-        <script>
-        jQuery(document).ready(function($) {
-            $('.wpj-cancel-btn').on('click', function() {
-                var btn = $(this);
-                var id = btn.data('id');
-                var reason = prompt("Please enter cancellation reason:");
-
-                if (reason === null) return; // Cancelled prompt
-
-                if (!reason) {
-                    alert("Reason is required!");
-                    return;
-                }
-
-                btn.text('Processing...').prop('disabled', true);
-
-                $.ajax({
-                    url: ajaxurl,
-                    type: 'POST',
-                    data: {
-                        action: 'cancel_booking',
-                        post_id: id,
-                        reason: reason,
-                        security: '<?php echo wp_create_nonce( "wpj_cancel_nonce" ); ?>'
-                    },
-                    success: function(res) {
-                        if (res.success) {
-                            alert(res.data);
-                            location.reload();
-                        } else {
-                            alert('Error: ' + res.data);
-                            btn.text('Cancel Booking').prop('disabled', false);
-                        }
-                    },
-                    error: function() {
-                        alert('Server Error');
-                        btn.text('Cancel Booking').prop('disabled', false);
-                    }
-                });
-            });
-        });
-        </script>
-        <?php
+        // 7. Update CPT Status to match
+        update_post_meta( $post_id, 'reservation_status', $new_status );
+        update_post_meta( $post_id, 'resv_cancellation_type', 'user_cancelled' ); // Track who cancelled
+        error_log( "GroupCancellation: Updated parent post $post_id status to " . $new_status );
+        error_log( "GroupCancellation: Set cancellation_type to 'user_cancelled'" );
+        
+        // 8. Trigger Group Cancellation Email
+        do_action( 'wind_passenger/group_cancellation_email', $post_id, $group_booking_ids, $new_status );
     }
 }
 
-new Booking_Cancellation_Handler();
+new Booking_Cancellation();

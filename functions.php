@@ -15,7 +15,8 @@
 require_once get_stylesheet_directory() . '/inc/class-flight-booking-engine.php';
 require_once get_stylesheet_directory() . '/inc/class-voucher-form-filler.php';
 require_once get_stylesheet_directory() . '/inc/Jetformbuilder-and-coupon-sync.php';
-require_once get_stylesheet_directory() . '/inc/class-booking-cancellation.php';
+require_once get_stylesheet_directory() . '/inc/class-booking-cancellation.php'; // Phase 4: Group Cancellation
+require_once get_stylesheet_directory() . '/inc/class-flight-cancellation-admin.php'; // Phase 5: Flight Cancellation
 require_once get_stylesheet_directory() . '/inc/woocommerce-cart.php';
 require_once get_stylesheet_directory() . '/inc/jet-engine-bridge.php';
 require_once get_stylesheet_directory() . '/inc/admin-columns.php';

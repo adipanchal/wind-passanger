@@ -44,48 +44,42 @@ class Jet_Booking_Sync
         // START with $_POST as base (always available)
         $form_data = $_POST;
         
-        // --- DEEP DEBUG: Inspect Handler Object ---
-        error_log('JetBookingSync: Handler class: ' . get_class($handler));
-        error_log('JetBookingSync: Handler properties (via array cast): ' . print_r((array) $handler, true));
+        // --- FETCH HANDLER DATA ---
+        // 1. Try jet_fb_context() for booking_ids (Preferred for arrays)
+        $handler_data = [];
+        if ( function_exists('jet_fb_context') ) {
+             $ctx_booking_ids = jet_fb_context()->get_value( 'booking_ids' );
+             if ( ! empty( $ctx_booking_ids ) ) {
+                 $handler_data['booking_ids'] = $ctx_booking_ids;
+             }
+        }
         
-        // Try multiple access methods
-        $handler_data = null;
-        
-        // Method 1: Direct property access (might work on later PHP/versions)
-        try {
-            $direct_access = $handler->request_data;
-            if (!empty($direct_access)) {
-                $handler_data = $direct_access;
-                error_log('JetBookingSync: SUCCESS - Direct access worked!');
+        // 2. Try Reflection to access protected request_data (Fallback)
+        if ( empty($handler_data['booking_ids']) ) {
+            try {
+                $reflection = new ReflectionClass($handler);
+                // Check response_data first (often has hook results)
+                if ($reflection->hasProperty('response_data')) {
+                    $prop = $reflection->getProperty('response_data');
+                    $prop->setAccessible(true);
+                    $response_data = $prop->getValue($handler);
+                    if (isset($response_data['booking_ids'])) {
+                        $handler_data = array_merge($handler_data, $response_data);
+                    }
+                }
+            } catch (Exception $e) {
+                // Sssh, it's okay
             }
-        } catch (Exception $e) {
-            error_log('JetBookingSync: Direct access failed: ' . $e->getMessage());
-        }
-        
-        // Method 2: Try using getter if exists
-        if (empty($handler_data) && method_exists($handler, 'get_request_data')) {
-            $handler_data = $handler->get_request_data();
-            error_log('JetBookingSync: Tried get_request_data() method');
-        }
-        
-        // Method 3: Check if there's a different property name
-        if (empty($handler_data) && property_exists($handler, '_request_data')) {
-            $handler_data = $handler->_request_data;
-            error_log('JetBookingSync: Tried _request_data property');
-        }
-        
-        // MERGE if we got anything
-        if (!empty($handler_data) && is_array($handler_data)) {
-            $form_data = array_merge($form_data, $handler_data);
-            error_log('JetBookingSync: Merged Handler Data (Priority) over $_POST');
-        } else {
-            error_log('JetBookingSync: Using $_POST only (handler data unavailable)');
         }
 
-        error_log('JetBookingSync: Using Final Form Data with ' . count($form_data) . ' keys');
-        
+        // MERGE data
+        if (!empty($handler_data)) {
+            // Handler/Context data OVERWRITES $_POST because it contains computed fields
+            $form_data = array_merge($form_data, $handler_data);
+        }
+
         if (empty($form_data)) {
-            error_log('JetBookingSync: CRITICAL - Form data is completely empty (even $_POST)!');
+            error_log('JetBookingSync: CRITICAL - Form data is completely empty!');
             return;
         }
 
@@ -273,12 +267,16 @@ class Jet_Booking_Sync
         $first_booking = $booking_ids[0];
         error_log('JetBookingSync: First Booking Data: ' . print_r($first_booking, true));
 
-        // 1. Update IDs (Cast to string to be safe)
-        $b_id = (string) $first_booking->booking_id;
-        $u_id = (string) $first_booking->apartment_unit;
-
-        update_post_meta($post_id, 'resv_booking_id', $b_id);
-        update_post_meta($post_id, 'resv_unit_id', $u_id);
+        // 1. Update IDs (Comma separated string for text field visibility)
+        // User requested to see ALL IDs in the text field (e.g., "421, 422")
+        $all_b_ids = array_map(function($b) { return $b->booking_id; }, $booking_ids);
+        $all_u_ids = array_map(function($b) { return $b->apartment_unit; }, $booking_ids);
+        
+        $b_id_str = implode(', ', $all_b_ids);
+        $u_id_str = implode(', ', $all_u_ids);
+        
+        update_post_meta( $post_id, 'resv_booking_id', $b_id_str );
+        update_post_meta( $post_id, 'resv_unit_id', $u_id_str );
 
         // 2. Update Statuses (User Requested)
         // Map Booking Status directly
@@ -295,8 +293,8 @@ class Jet_Booking_Sync
         $saved_unit_id = get_post_meta($post_id, 'resv_unit_id', true);
         $saved_status = get_post_meta($post_id, 'reservation_status', true);
 
-        error_log("JetBookingSync: VERIFICATION -> Saved resv_booking_id: '$saved_booking_id' (Expected: '$b_id')");
-        error_log("JetBookingSync: VERIFICATION -> Saved resv_unit_id: '$saved_unit_id' (Expected: '$u_id')");
+        error_log("JetBookingSync: VERIFICATION -> Saved resv_booking_id: '$saved_booking_id' (Expected: '$b_id_str')");
+        error_log("JetBookingSync: VERIFICATION -> Saved resv_unit_id: '$saved_unit_id' (Expected: '$u_id_str')");
         error_log("JetBookingSync: VERIFICATION -> Saved reservation_status: '$saved_status' (Expected: '$status')");
 
         // Store array of booking IDs
