@@ -162,13 +162,53 @@
                         $discountField.val(value);
                         
                         // Force JetFormBuilder updates
-                        $discountField.trigger('change').trigger('input');
+                        $discountField.trigger('change').trigger('input').trigger('blur');
                         
                         // Native events for deep frameworks
                         if ($discountField[0]) {
                             $discountField[0].dispatchEvent(new Event('change', { bubbles: true }));
                             $discountField[0].dispatchEvent(new Event('input', { bubbles: true }));
                         }
+                        
+                        // CRITICAL: Manually update the displayed total price
+                        setTimeout(function() {
+                            var $totalPriceInput = $form.find('[name="total_price"]');
+                            var $totalPriceDisplay = $form.find('.jet-form-builder__calculated-field-val');
+                            var $unitField = $form.find('input[name="unit_number"]');
+                            var $priceField = $form.find('input[name="price"]');
+                            
+                            if ($totalPriceInput.length && $unitField.length) {
+                                // 1. Calculate TRUE Gross Price directly (units * price)
+                                var units = parseInt($unitField.val()) || 1;
+                                var unitPrice = 0;
+                                
+                                if ($priceField.length) {
+                                    unitPrice = parseFloat($priceField.val()) || 0;
+                                } else {
+                                    // Fallback: try to guess from current total if discount wasn't applied yet
+                                    // This is risky, so better to rely on price field
+                                    var currentTotal = parseFloat($totalPriceInput.val()) || 0;
+                                    // Best effort backup
+                                    unitPrice = (currentTotal + value) / units; 
+                                }
+                                
+                                // Recalculate correctly
+                                var grossTotal = units * unitPrice;
+                                var netTotal = grossTotal - value;
+                                
+                                // Safety check: net total cannot be negative
+                                if (netTotal < 0) netTotal = 0;
+                                
+                                // Update both hidden input and display
+                                $totalPriceInput.val(netTotal.toFixed(2));
+                                if ($totalPriceDisplay.length) {
+                                    $totalPriceDisplay.text(netTotal.toFixed(2));
+                                }
+                                
+                                // Force JFB to accept this value (sometimes it reverts)
+                                $totalPriceInput.trigger('change');
+                            }
+                        }, 200); // Increased delay slightly to beat JFB's own calculation
                     }
                 }
 
@@ -180,6 +220,45 @@
                     }
                     $msg.text(text).css('color', color);
                 }
+
+                // AUTO-REAPPLY COUPON when unit/passenger count changes
+                $(document.body).on('change input', 'input[name="unit_number"]', function() {
+                    
+                    var $changedInput = $(this);
+                    var $form = $changedInput.closest('form');
+                    
+                    // Small delay to allow price recalculation to complete first
+                    setTimeout(function() {
+                        var $couponField = $form.find('#coupon_code');
+                        var couponCode = $couponField.val();
+                        
+                        // Only re-validate if a coupon was already applied
+                        if (couponCode && couponCode.trim() !== '') {
+                            var totalPrice = getFormTotalPrice($form);
+                            
+                            $.ajax({
+                                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                                type: 'POST',
+                                data: {
+                                    action: 'get_coupon_discount',
+                                    coupon_code: couponCode,
+                                    total_price: totalPrice
+                                },
+                                success: function(response) {
+                                    if (response.success && response.data.discount_amount > 0) {
+                                        var discount = response.data.discount_amount;
+                                        updateDiscount($form, discount);
+                                        showStatus($couponField, '✅ Coupon Applied: -' + discount, 'green');
+                                    } else {
+                                        var msg = (response.data && response.data.msg) ? response.data.msg : 'Invalid Code';
+                                        updateDiscount($form, 0);
+                                        showStatus($couponField, '❌ ' + msg, 'red');
+                                    }
+                                }
+                            });
+                        }
+                    }, 300); // Wait for price recalculation
+                });
             });
         </script>
         <?php
