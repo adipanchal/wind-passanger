@@ -15,10 +15,58 @@ class Booking_Cancellation {
     public function __construct() {
         // Hook into database queries to catch direct updates
         add_filter( 'query', [ $this, 'monitor_booking_updates' ] );
+        
+        // Frontend AJAX Handler
+        add_action( 'wp_ajax_wind_cancel_reservation', [ $this, 'handle_frontend_cancellation' ] );
     }
     
     /**
+     * Handle Manual Cancellation from User Dashboard (Frontend)
+     */
+    public function handle_frontend_cancellation() {
+        check_ajax_referer( 'wind_cancel_nonce', 'nonce' );
+        
+        $post_id = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
+        $user_id = get_current_user_id();
+        
+        if ( ! $post_id || ! $user_id ) {
+            wp_send_json_error( 'Invalid request.' );
+        }
+        
+        // 1. Verify Ownership
+        $author_id = (int) get_post_field( 'post_author', $post_id );
+        if ( $author_id !== $user_id && ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( 'Unauthorized.' );
+        }
+        
+        // 2. Get Group Details to trigger logic
+        // We need a valid booking ID from this group to trigger the main function
+        $booking_ids = get_post_meta( $post_id, 'booking_ids', true );
+        
+        if ( empty( $booking_ids ) || ! is_array( $booking_ids ) ) {
+            // Try single
+            $single_id = get_post_meta( $post_id, 'resv_booking_id', true );
+            if ( $single_id ) {
+                $booking_ids = [ intval( $single_id ) ];
+            } else {
+                wp_send_json_error( 'No bookings found for this reservation.' );
+            }
+        }
+        
+        // 3. Trigger Cancellation
+        // We use the first booking ID as the "trigger"
+        $trigger_id = $booking_ids[0];
+        
+        // Call the main logic directly
+        // Mark as 'cancelled' (User action)
+        $this->handle_group_cancellation( $trigger_id, null, [ 'status' => 'cancelled' ] );
+        
+        wp_send_json_success( 'Reservation cancelled successfully.' );
+    }
+
+    /**
      * Monitor raw SQL queries for booking status updates
+
      * This is necessary because JetBooking updates the database directly
      */
     public function monitor_booking_updates( $query ) {
@@ -148,11 +196,82 @@ class Booking_Cancellation {
             error_log( "GroupCancellation: Auto-cancelled sibling booking $sibling_id" );
         }
 
+        // --- 72-Hour Rule & Voucher Restoration ---
+        global $wpdb;
+        $b_table = $wpdb->prefix . 'jet_apartment_bookings';
+        $booking_row = $wpdb->get_row( $wpdb->prepare( "SELECT check_in_date FROM $b_table WHERE booking_id = %d", $booking_id ) );
+        
+        if ( $booking_row ) {
+            $check_in_ts = is_numeric( $booking_row->check_in_date ) ? $booking_row->check_in_date : strtotime( $booking_row->check_in_date );
+            $current_ts  = current_time( 'timestamp' );
+            $hours_diff  = ( $check_in_ts - $current_ts ) / 3600;
+            
+            error_log( "GroupCancellation: Flight Timer - Check-in: $check_in_ts, Now: $current_ts, Hours Dest: $hours_diff" );
+
+            $used_coupon = get_post_meta( $post_id, '_used_coupon_code', true );
+
+            if ( $hours_diff >= 72 ) {
+                // > 72 Hours: REFUND / RESTORE
+                if ( ! empty( $used_coupon ) ) {
+                    error_log( "GroupCancellation: > 72h. Attempting to restore coupon: $used_coupon" );
+                    
+                    // 1. Restore Voucher CPT
+                    $v_posts = get_posts([
+                        'post_type'  => 'voucher',
+                        'meta_key'   => 'voucher_code',
+                        'meta_value' => $used_coupon,
+                        'fields'     => 'ids',
+                        'numberposts' => 1
+                    ]);
+                    
+                    if ( ! empty( $v_posts ) ) {
+                        update_post_meta( $v_posts[0], 'voucher_status', 'active' );
+                        error_log( "GroupCancellation: Restored Voucher CPT ID " . $v_posts[0] );
+                    }
+                    
+                    // 2. Restore WC Coupon
+                    if ( class_exists( 'WC_Coupon' ) ) {
+                        $wc_coupon = new WC_Coupon( $used_coupon );
+                        if ( $wc_coupon->get_id() ) {
+                            try {
+                                $wc_coupon->decrease_usage_count();
+                                error_log( "GroupCancellation: Decreased WC Coupon usage count." );
+                            } catch ( Exception $e ) {
+                                error_log( "GroupCancellation: WC Coupon error: " . $e->getMessage() );
+                            }
+                        }
+                    }
+                }
+                
+                // If "cancelled", upgrade to "refunded" for clarity in CPT
+                if ( 'cancelled' === $new_status ) {
+                     $new_status = 'refunded';
+                }
+                
+            } else {
+                // < 72 Hours: FORFEIT
+                error_log( "GroupCancellation: < 72h. Voucher/Payment forfeited." );
+                update_post_meta( $post_id, 'cancellation_note', 'Forfeited (Less than 72h notice)' );
+            }
+        }
+
         // 7. Update CPT Status to match
         update_post_meta( $post_id, 'reservation_status', $new_status );
-        update_post_meta( $post_id, 'resv_cancellation_type', 'user_cancelled' ); // Track who cancelled
-        error_log( "GroupCancellation: Updated parent post $post_id status to " . $new_status );
-        error_log( "GroupCancellation: Set cancellation_type to 'user_cancelled'" );
+        
+        // Update Check-in Status to Terminado (as per user request)
+        update_post_meta( $post_id, 'chek-in_status', 'Terminado' );
+        
+        // Track who cancelled only if not already set (preserve 'flight_cancelled' if admin did it)
+        // Wait, 'user_cancelled' logic was simpler before. 
+        // If coming from Frontend AJAX, we know it's user.
+        // If coming from Admin, we might want to be careful.
+        // But for now, let's just stick to the requested "Terminado" update.
+        
+        if ( ! get_post_meta( $post_id, 'resv_cancellation_type', true ) ) {
+             update_post_meta( $post_id, 'resv_cancellation_type', 'user_cancelled' );
+        }
+        
+        error_log( "GroupCancellation: Updated parent post $post_id status to $new_status and check-in to Terminado" );
         
         // 8. Trigger Group Cancellation Email
         do_action( 'wind_passenger/group_cancellation_email', $post_id, $group_booking_ids, $new_status );

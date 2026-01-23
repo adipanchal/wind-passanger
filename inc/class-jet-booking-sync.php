@@ -263,6 +263,19 @@ class Jet_Booking_Sync
         update_post_meta($post_id, 'apartment_id', $apartment_id);
         update_post_meta($post_id, 'resv_no_de_passageiros', $booking_count); // Override count with actual booking count
 
+        // Store Coupon Code if used
+        $coupon_code = '';
+        if ( ! empty( $form_data['coupon_code'] ) ) {
+            $coupon_code = sanitize_text_field( $form_data['coupon_code'] );
+        } elseif ( ! empty( $form_data['form_voucher_code'] ) ) {
+            $coupon_code = sanitize_text_field( $form_data['form_voucher_code'] );
+        }
+
+        if ( $coupon_code ) {
+            update_post_meta( $post_id, '_used_coupon_code', $coupon_code );
+            error_log( "JetBookingSync: Saved used coupon code '$coupon_code' to post $post_id" );
+        }
+
         // Debug: Log first booking data
         $first_booking = $booking_ids[0];
         error_log('JetBookingSync: First Booking Data: ' . print_r($first_booking, true));
