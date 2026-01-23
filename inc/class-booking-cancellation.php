@@ -54,12 +54,26 @@ class Booking_Cancellation {
         }
         
         // 3. Trigger Cancellation
-        // We use the first booking ID as the "trigger"
+        // We MUST update the DB for the trigger ID. 
+        // This DB update will be caught by our 'monitor_booking_updates' hook, 
+        // which will then handle the group cascade (cancel siblings, update CPT, etc).
         $trigger_id = $booking_ids[0];
         
-        // Call the main logic directly
-        // Mark as 'cancelled' (User action)
-        $this->handle_group_cancellation( $trigger_id, null, [ 'status' => 'cancelled' ] );
+        if ( function_exists( 'jet_abaf' ) ) {
+            jet_abaf()->db->update_booking( $trigger_id, [ 'status' => 'cancelled' ] );
+            
+            // Fallback: If for some reason the monitor doesn't catch it (e.g. hook issues),
+            // We manually trigger the handler afterwards.
+            // But we must check if it was already handled to avoid double processing.
+            // For now, let's rely on the monitor as it's the core architecture.
+            
+            // Also explicitly update the CPT 'chek-in_status' here just in case, 
+            // though the group handler does it too.
+            update_post_meta( $post_id, 'chek-in_status', 'Terminado' );
+            
+        } else {
+             wp_send_json_error( 'Booking system not ready.' );
+        }
         
         wp_send_json_success( 'Reservation cancelled successfully.' );
     }
