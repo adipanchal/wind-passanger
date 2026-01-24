@@ -25,6 +25,7 @@ require_once get_stylesheet_directory() . '/inc/flight-filters.php';
 require_once get_stylesheet_directory() . '/inc/checkout-auth.php';
 require_once get_stylesheet_directory() . '/inc/my-account-filter.php';
 require_once get_stylesheet_directory() . '/inc/class-jet-booking-sync.php';
+require_once get_stylesheet_directory() . '/inc/class-checkin-manager.php';
 require_once get_stylesheet_directory() . '/inc/custom-shortcodes.php';
 
 if (!defined('ABSPATH')) {

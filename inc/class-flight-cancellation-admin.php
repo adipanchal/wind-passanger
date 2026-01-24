@@ -48,14 +48,17 @@ class Flight_Cancellation_Admin {
                     cursor: pointer;
                     font-size: 13px;
                     text-decoration: none;
-                    display: inline-block;
+                    display: block;
+                    width: 100%;
+                    box-sizing: border-box;
+                    text-align: center;
                 }
                 .cancel-flight-btn:hover {
                     background: #b52727;
                     color: #fff;
                 }
                 .column-cancel_flight {
-                    width: 120px;
+                    width: 140px; /* Slightly wider to accommodate full width feel */
                     text-align: center;
                 }
             </style>';

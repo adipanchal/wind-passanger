@@ -298,6 +298,7 @@ class Jet_Booking_Sync
 
         // Set Check-in Status (Default to 'Pendente' if new, or logic if available)
         // Note: Key is 'chek-in_status' as per user screenshot (typo included)
+        // Set Check-in Status (Default to 'Pendente' as per user request)
         update_post_meta($post_id, 'chek-in_status', 'Pendente');
 
 
