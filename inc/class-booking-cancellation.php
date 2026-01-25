@@ -67,9 +67,9 @@ class Booking_Cancellation {
             // But we must check if it was already handled to avoid double processing.
             // For now, let's rely on the monitor as it's the core architecture.
             
-            // Also explicitly update the CPT 'chek-in_status' here just in case, 
+            // Also explicitly update the CPT 'check-in_status' here just in case, 
             // though the group handler does it too.
-            update_post_meta( $post_id, 'chek-in_status', 'Terminado' );
+            update_post_meta( $post_id, 'check-in_status', 'Terminado' );
             
         } else {
              wp_send_json_error( 'Booking system not ready.' );
@@ -273,7 +273,7 @@ class Booking_Cancellation {
         update_post_meta( $post_id, 'reservation_status', $new_status );
         
         // Update Check-in Status to Terminado (as per user request)
-        update_post_meta( $post_id, 'chek-in_status', 'Terminado' );
+        update_post_meta( $post_id, 'check-in_status', 'Terminado' );
         
         // Track who cancelled only if not already set (preserve 'flight_cancelled' if admin did it)
         // Wait, 'user_cancelled' logic was simpler before. 

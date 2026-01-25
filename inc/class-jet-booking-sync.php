@@ -227,7 +227,7 @@ class Jet_Booking_Sync
             error_log("JetBookingSync: Form created post $post_id, updating with grouped data");
 
             // Only update title if it looks incomplete (optional, or just skip title update entirely)
-            // User request: "we need to target only this reservation_status chek-in_status resv_booking_id resv_unit_id"
+            // User request: "we need to target only this reservation_status check-in_status resv_booking_id resv_unit_id"
 
             // Note: reservation_status and check_in_status might be set by form or JetBooking internal logic.
             // We ensure our custom group fields are set.
@@ -297,9 +297,9 @@ class Jet_Booking_Sync
         update_post_meta($post_id, 'reservation_status', $status);
 
         // Set Check-in Status (Default to 'Pendente' if new, or logic if available)
-        // Note: Key is 'chek-in_status' as per user screenshot (typo included)
+        // Note: Key is 'check-in_status' as per user screenshot (typo included)
         // Set Check-in Status (Default to 'Pendente' as per user request)
-        update_post_meta($post_id, 'chek-in_status', 'Pendente');
+        update_post_meta($post_id, 'check-in_status', 'Pendente');
 
 
         // --- VERIFICATION: Read back values ---

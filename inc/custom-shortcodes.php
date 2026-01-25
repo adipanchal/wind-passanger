@@ -31,7 +31,7 @@ function wind_get_ticket_context( $post_id ) {
         'is_past'     => $is_past,
         'status'      => $status,
         'cancel_type' => $cancel_type,
-        'checkin'     => get_post_meta( $post_id, 'chek-in_status', true ) ?: 'Pendente' 
+        'checkin'     => get_post_meta( $post_id, 'check-in_status', true ) ?: 'Pendente' 
     ];
 }
 
