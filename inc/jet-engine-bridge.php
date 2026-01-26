@@ -18,8 +18,6 @@ add_action('woocommerce_order_status_completed', function ($order_id) {
     foreach ($order->get_items() as $item) {
 
         $product_id = $item->get_product_id();
-        error_log( "VoucherGen: Processing Order $order_id Item Product $product_id" );
-
 
         /* ------------------------------------
          * STOP if voucher already exists
@@ -46,9 +44,13 @@ add_action('woocommerce_order_status_completed', function ($order_id) {
          * ------------------------------------ */
         $raw_passengers = $item->get_meta('no-de-passageiros');
         $voucher_passengers = (int) extract_first_number($raw_passengers);
-
         $voucher_after_ballooning = $item->get_meta('extra-apres-ballooning');
         $voucher_gift_box         = $item->get_meta('pa_extra-gift-box');
+
+        /* ------------------------------------
+         * NEW: Flight Location (variation meta)
+         * ------------------------------------ */
+        $flight_location_raw = trim($item->get_meta('localizacao'));
 
         /* ------------------------------------
          * Flight Type (Optional now)
@@ -122,5 +124,50 @@ add_action('woocommerce_order_status_completed', function ($order_id) {
             wp_set_object_terms($voucher_id, $flight_type, 'flight-type');
         }
         error_log( "VoucherGen: Created Voucher $voucher_id for Order $order_id" );
+        /* ------------------------------------
+        * Flight Location Taxonomy Logic
+        * ------------------------------------ */
+        if (!empty($flight_location_raw)) {
+
+            $location_name = sanitize_text_field($flight_location_raw);
+
+            // 1️⃣ Try to find existing term by NAME
+            $term = get_term_by('name', $location_name, 'flight-location');
+
+            // 2️⃣ If not found, create new term
+            if (!$term) {
+                $term = wp_insert_term(
+                    $location_name,
+                    'flight-location',
+                    [
+                        'slug' => sanitize_title($location_name),
+                    ]
+                );
+            }
+
+            // 3️⃣ Assign term to voucher
+            if (!is_wp_error($term)) {
+                $term_id = is_object($term) ? $term->term_id : $term['term_id'];
+
+                wp_set_object_terms(
+                    $voucher_id,
+                    (int) $term_id,
+                    'flight-location',
+                    false
+                );
+            }
+        }
+        /* ------------------------------------
+        * Set Voucher Featured Image
+        * ------------------------------------ */
+        $product_obj = $item->get_product();
+
+        if ( $product_obj ) {
+            $thumbnail_id = $product_obj->get_image_id();
+
+            if ( $thumbnail_id ) {
+                set_post_thumbnail( $voucher_id, $thumbnail_id );
+            }
+        }
     }
 });
