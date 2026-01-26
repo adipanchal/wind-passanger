@@ -93,12 +93,15 @@ add_action('woocommerce_order_status_completed', function ($order_id) {
         update_post_meta($voucher_id, 'voucher_code', $voucher_code);
         update_post_meta($voucher_id, 'voucher_passengers', $voucher_passengers);
         update_post_meta($voucher_id, 'voucher_after_ballooning', $voucher_after_ballooning);
-        update_post_meta($voucher_id, 'voucher_gift_box', $voucher_gift_box);
         update_post_meta($voucher_id, 'voucher_accommodation_status', '');
         update_post_meta($voucher_id, 'voucher_expiry_date', $expiry);
+        update_post_meta($voucher_id, 'voucher_gift_box', $voucher_gift_box);
         update_post_meta($voucher_id, 'voucher_owner', $user_id);
         update_post_meta($voucher_id, 'linked_order_id', $order_id);
         update_post_meta($voucher_id, 'linked_product_id', $product_id);
+        
+        // --- NEW: Purchase Date ---
+        update_post_meta($voucher_id, 'voucher_purchase_date', current_time('timestamp'));
 
         // --- NEW: Populate Title & Category ---
         $product_obj = $item->get_product();

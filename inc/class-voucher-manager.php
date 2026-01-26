@@ -141,7 +141,8 @@ class Voucher_Manager {
             
             // 5. Send Email
             // $code is already set above
-            $activation_link = home_url( '/ativar-voucher?code=' . $code );
+            // Changed to use the specific Voucher Page URL (for dynamic templates)
+            $activation_link = esc_url( add_query_arg( 'activation_code', $code, get_permalink( $new_voucher_id ) ) );
             
             $subject = "You received a Gift Voucher from " . wp_get_current_user()->display_name;
             $message = "Hello $receiver_name,\n\n";
@@ -238,13 +239,27 @@ class Voucher_Manager {
      * [wind_voucher_status_badge]
      * [wind_booking_url] -> Returns URL string
      * [wind_transfer_button text="Transfer"] -> Returns Button HTML
+     * [wind_booking_status_text] -> Returns booking status text
+     * [wind_has_booking] -> Returns 1 or 0 for visibility
+     * [wind_can_book] -> Returns 1 or 0 for visibility
+     * [wind_booking_helper_text] -> Returns helper text below booking
+     * [wind_validity_text] -> Returns validity status
+     * [wind_purchase_date] -> Returns formatted purchase date
      */
     public function register_shortcodes() {
         add_shortcode( 'wind_voucher_status_badge', [ $this, 'render_status_badge' ] );
         add_shortcode( 'wind_booking_url', [ $this, 'render_booking_url' ] );
         add_shortcode( 'wind_transfer_button', [ $this, 'render_transfer_button' ] );
-        // Deprecating wind_voucher_actions or keeping as legacy? User asked for separate.
-        // I will keep wind_voucher_actions but update it too just in case.
+        
+        // New Dashboard Shortcodes
+        add_shortcode( 'wind_booking_status_text', [ $this, 'render_booking_status_text' ] );
+        add_shortcode( 'wind_has_booking', [ $this, 'render_has_booking' ] );
+        add_shortcode( 'wind_can_book', [ $this, 'render_can_book' ] );
+        add_shortcode( 'wind_booking_helper_text', [ $this, 'render_booking_helper_text' ] );
+        add_shortcode( 'wind_validity_text', [ $this, 'render_validity_text' ] );
+        add_shortcode( 'wind_purchase_date', [ $this, 'render_purchase_date' ] );
+        add_shortcode( 'wind_transfer_url', [ $this, 'render_transfer_url' ] );
+        add_shortcode( 'wind_can_transfer', [ $this, 'render_can_transfer' ] );
     }
 
     public function render_status_badge() {
@@ -271,7 +286,7 @@ class Voucher_Manager {
      */
     public function render_booking_url( $atts ) {
          $atts = shortcode_atts( [
-            'base_url'  => '/schedule-flight',
+            'base_url'  => '/schedule-flight/',
         ], $atts );
 
         $id = get_the_ID();
@@ -316,6 +331,213 @@ class Voucher_Manager {
         }
 
         return ''; // Logic to hide button
+    }
+
+    /* ========================================
+     * NEW DASHBOARD SHORTCODES
+     * ======================================== */
+
+    /**
+     * Helper: Check if voucher is expired
+     */
+    private function is_voucher_expired( $voucher_id ) {
+        $expiry = get_post_meta( $voucher_id, 'voucher_expiry_date', true );
+        if ( empty( $expiry ) ) {
+            return false;
+        }
+        return $expiry < current_time( 'timestamp' );
+    }
+
+    /**
+     * Helper: Format date in Portuguese
+     */
+    private function format_portuguese_date( $timestamp ) {
+        if ( empty( $timestamp ) ) {
+            return 'Sem dados';
+        }
+        
+        $months = [
+            'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+            'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
+        ];
+        
+        $day = date( 'j', $timestamp );
+        $month = $months[ date( 'n', $timestamp ) - 1 ];
+        $year = date( 'Y', $timestamp );
+        
+        return "$day $month $year";
+    }
+
+    /**
+     * [wind_booking_status_text]
+     * Returns: "Voo marcado" | "Voo por marcar" | "Sem marcação disponível"
+     */
+    public function render_booking_status_text() {
+        $id = get_the_ID();
+        $status = get_post_meta( $id, 'voucher_status', true );
+        $booking_id = get_post_meta( $id, 'linked_reservation_id', true );
+
+        if ( ! empty( $booking_id ) ) {
+            return 'Voo marcado';
+        }
+
+        if ( 'active' === $status ) {
+            return 'Voo por marcar';
+        }
+
+        return 'Sem marcação disponível';
+    }
+
+    /**
+     * [wind_has_booking]
+     * Returns: 1 if booking exists, 0 otherwise (for "Ver reserva" button visibility)
+     */
+    public function render_has_booking() {
+        $id = get_the_ID();
+        $booking_id = get_post_meta( $id, 'linked_reservation_id', true );
+        return ! empty( $booking_id ) ? '1' : '0';
+    }
+
+    /**
+     * [wind_can_book]
+     * Returns: 1 if can book (active + no booking), 0 otherwise (for "Fazer marcação" button visibility)
+     */
+    public function render_can_book() {
+        $id = get_the_ID();
+        $status = trim( get_post_meta( $id, 'voucher_status', true ) );
+        $booking_id = get_post_meta( $id, 'linked_reservation_id', true );
+
+        // Explicitly exclude non-bookable statuses
+        $excluded_statuses = [ 'transferred', 'used', 'pending_activation', 'expired' ];
+        if ( in_array( $status, $excluded_statuses, true ) ) {
+            return '0';
+        }
+
+        // Check if expired
+        if ( $this->is_voucher_expired( $id ) ) {
+            return '0';
+        }
+
+        // Must be active AND no booking exists
+        if ( 'active' === $status && empty( $booking_id ) ) {
+            return '1';
+        }
+
+        return '0';
+    }
+
+    /**
+     * [wind_booking_helper_text]
+     * Returns: Helper/subtitle text or empty string
+     */
+    public function render_booking_helper_text() {
+        $id = get_the_ID();
+        $status = get_post_meta( $id, 'voucher_status', true );
+        $booking_id = get_post_meta( $id, 'linked_reservation_id', true );
+
+        // No helper text if active or booked
+        if ( 'active' === $status || ! empty( $booking_id ) ) {
+            return '';
+        }
+
+        // Show specific helper text based on status
+        switch ( $status ) {
+            case 'used':
+                return 'Voucher Usado';
+            case 'transferred':
+                return 'Voucher Transferido';
+            default:
+                // Check if expired
+                if ( $this->is_voucher_expired( $id ) ) {
+                    return 'Voucher Expirado';
+                }
+                return '';
+        }
+    }
+
+    /**
+     * [wind_validity_text]
+     * Returns: "Válido" | "Usado" | "Expirado" | "Sem dados" | "Voucher Transferido"
+     */
+    public function render_validity_text() {
+        $id = get_the_ID();
+        $status = get_post_meta( $id, 'voucher_status', true );
+
+        // Check status first
+        if ( 'used' === $status ) {
+            return 'Usado';
+        }
+
+        if ( 'transferred' === $status ) {
+            return 'Transferido';
+        }
+
+        // Check expiry
+        if ( $this->is_voucher_expired( $id ) ) {
+            return 'Expirado';
+        }
+
+        // If active and not expired
+        if ( 'active' === $status ) {
+            return 'Válido';
+        }
+
+        return 'Sem dados';
+    }
+
+    /**
+     * [wind_purchase_date]
+     * Returns: Formatted purchase date in Portuguese
+     */
+    public function render_purchase_date() {
+        $id = get_the_ID();
+        $purchase_date = get_post_meta( $id, 'voucher_purchase_date', true );
+        return $this->format_portuguese_date( $purchase_date );
+    }
+
+    /**
+     * [wind_transfer_url]
+     * Returns: URL for transfer page with voucher_id parameter
+     */
+    public function render_transfer_url( $atts ) {
+        $atts = shortcode_atts( [
+            'base_url' => '/transferir-voucher',
+        ], $atts );
+
+        $id = get_the_ID();
+        $status = get_post_meta( $id, 'voucher_status', true );
+        $booking_id = get_post_meta( $id, 'linked_reservation_id', true );
+        $parent_id = get_post_meta( $id, 'parent_voucher_id', true );
+
+        // Same logic as transfer button
+        if ( 'active' === $status && empty( $booking_id ) && empty( $parent_id ) ) {
+            return esc_url( add_query_arg( 'voucher_id', $id, $atts['base_url'] ) );
+        }
+
+        return '#'; // Inactive link
+    }
+
+    public function render_can_transfer() {
+        $id = get_the_ID();
+        $status = trim( get_post_meta( $id, 'voucher_status', true ) );
+        $booking_id = get_post_meta( $id, 'linked_reservation_id', true );
+        $parent_id = get_post_meta( $id, 'parent_voucher_id', true );
+
+        // Explicitly exclude non-transferable statuses
+        $excluded_statuses = [ 'transferred', 'used', 'pending_activation', 'expired' ];
+        if ( in_array( $status, $excluded_statuses, true ) ) {
+            return '0';
+        }
+
+        // Check if expired
+        if ( $this->is_voucher_expired( $id ) ) {
+            return '0';
+        }
+
+        if ( 'active' === $status && empty( $booking_id ) && empty( $parent_id ) ) {
+            return '1';
+        }
+        return '0';
     }
 }
 

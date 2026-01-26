@@ -32,15 +32,18 @@ class Voucher_Form_Filler {
 		$passengers           = get_post_meta( $voucher_id, 'voucher_passengers', true );
 		$voucher_code         = get_post_meta( $voucher_id, 'voucher_code', true );
 		
-		// New Fields (Try both likely keys just in case)
-		$gift_box             = get_post_meta( $voucher_id, '_gift_box', true );
-		if ( '' === $gift_box ) $gift_box = get_post_meta( $voucher_id, 'gift_box', true );
+		// Updated Meta Keys (prefixed)
+        // 1. Gift Box
+		$gift_box             = get_post_meta( $voucher_id, 'voucher_gift_box', true );
+		if ( '' === $gift_box ) $gift_box = get_post_meta( $voucher_id, 'gift_box', true ); // Fallback
 
-		$after_ballooning     = get_post_meta( $voucher_id, '_after_ballooning', true );
-		if ( '' === $after_ballooning ) $after_ballooning = get_post_meta( $voucher_id, 'after_ballooning', true );
+        // 2. After Ballooning
+		$after_ballooning     = get_post_meta( $voucher_id, 'voucher_after_ballooning', true );
+		if ( '' === $after_ballooning ) $after_ballooning = get_post_meta( $voucher_id, 'after_ballooning', true ); // Fallback
 
-		$accommodation_status = get_post_meta( $voucher_id, '_accommodation-status', true );
-		if ( '' === $accommodation_status ) $accommodation_status = get_post_meta( $voucher_id, 'accommodation-status', true );
+        		// 3. Accommodation
+		$accommodation_status = get_post_meta( $voucher_id, 'voucher_accommodation_status', true );
+		if ( '' === $accommodation_status ) $accommodation_status = get_post_meta( $voucher_id, 'accommodation-status', true ); // Fallback
 
 		// 4. Output Javascript & CSS
 		?>
@@ -71,21 +74,33 @@ class Voucher_Form_Filler {
 					after_ballooning: "<?php echo esc_js( $after_ballooning ); ?>",
 					accommodation_status: "<?php echo esc_js( $accommodation_status ); ?>"
 				};
-
+                
 				// Helper to set value and trigger events
 				const setField = (form, name, value) => {
 					if (!value) return;
-					const field = form.querySelector(`[name="${name}"]`);
+					
+                    // Try exact name (Handles inputs, textareas, selects, and hidden fields)
+                    let field = form.querySelector(`[name="${name}"]`);
+                    
+                    // If not found, try replacing underscore with hyphen
+                    if (!field && name.includes('_')) {
+                         const hyphenName = name.replace(/_/g, '-');
+                         field = form.querySelector(`[name="${hyphenName}"]`);
+                    }
+
 					if (field) {
 						field.value = value;
-                        // Add class and readonly attribute
-                        field.classList.add('voucher-apply-field');
-                        field.setAttribute('readonly', 'readonly');
+                        
+                        // Add class and readonly attribute (only for visible fields)
+                        if (field.type !== 'hidden') {
+                            field.classList.add('voucher-apply-field');
+                            field.setAttribute('readonly', 'readonly');
+                        }
                         
 						field.dispatchEvent(new Event('input', { bubbles: true }));
 						field.dispatchEvent(new Event('change', { bubbles: true }));
 						
-						// Trigger jQuery events if available
+						// Trigger jQuery events if available (JetFormBuilder uses jQuery often)
 						if (window.jQuery) {
 							window.jQuery(field).trigger('input').trigger('change').trigger('keyup');
 						}
@@ -122,7 +137,7 @@ class Voucher_Form_Filler {
 					setField(form, 'after_ballooning', voucherData.after_ballooning);
 
 					// 6. Fill Accommodation Status
-					setField(form, 'accommodation-status', voucherData.accommodation_status);
+					setField(form, 'accommodation_status', voucherData.accommodation_status);
 				};
                 
 				// Observer to wait for Popup/Form to appear in DOM
