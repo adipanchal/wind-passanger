@@ -117,7 +117,17 @@ class Voucher_Manager {
             
             // Set New Meta
             update_post_meta( $new_voucher_id, 'voucher_status', 'pending_activation' );
-            update_post_meta( $new_voucher_id, 'voucher_owner', 0 ); 
+            
+            // --- NEW: Try to find user by email and assign immediately ---
+            $recipient_user = get_user_by( 'email', $receiver_email );
+            if ( $recipient_user ) {
+                update_post_meta( $new_voucher_id, 'voucher_owner', $recipient_user->ID );
+                error_log( "VoucherMgr: Recipient user found (ID: {$recipient_user->ID}). Assigned Owner immediately." );
+            } else {
+                update_post_meta( $new_voucher_id, 'voucher_owner', 0 );
+                error_log( "VoucherMgr: Recipient user not found for email '$receiver_email'. Owner set to 0." );
+            }
+
             update_post_meta( $new_voucher_id, 'transferred_to_email', $receiver_email );
             update_post_meta( $new_voucher_id, 'gift_from_name', wp_get_current_user()->display_name );
             update_post_meta( $new_voucher_id, 'gift_message', $gift_message );
@@ -129,20 +139,20 @@ class Voucher_Manager {
                 wp_set_post_terms( $new_voucher_id, $flight_terms, 'flight-type' );
             }
 
-            // Set specific taxonomy status if needed (optional, assuming 'pending' exists or leave empty until active)
-            // For now, we rely on Meta 'voucher_status' = pending_activation. 
-            // If you have a 'Pending' term, we could set it:
+            // Set Taxonomy to Pending
             wp_set_object_terms( $new_voucher_id, 'pending', 'voucher-status' );
             
-            // 4. Update Original
+            // 4. Update Original (Sender)
             update_post_meta( $voucher_id, 'voucher_status', 'transferred' );
+            wp_set_object_terms( $voucher_id, 'transferred', 'voucher-status' ); // Ensure taxonomy reflects this
+            
             update_post_meta( $voucher_id, 'transferred_to_email', $receiver_email );
             update_post_meta( $voucher_id, 'clone_voucher_id', $new_voucher_id );
             
             // 5. Send Email
             // $code is already set above
             // Changed to use the specific Voucher Page URL (for dynamic templates)
-            $activation_link = esc_url( add_query_arg( 'activation_code', $code, get_permalink( $new_voucher_id ) ) );
+            $activation_link = get_permalink( $new_voucher_id );
             
             $subject = "You received a Gift Voucher from " . wp_get_current_user()->display_name;
             $message = "Hello $receiver_name,\n\n";
@@ -218,18 +228,25 @@ class Voucher_Manager {
                  throw new Exception( "Access Denied. This voucher was sent to $allowed_email. You are logged in as $current_email." );
             }
             
-            // Activate & Assign
+
+            // Activate & Assign (Logic Updated)
+            // Even if owner was already assigned during transfer, we confirm it here.
             update_post_meta( $voucher_id, 'voucher_owner', $current_user->ID );
             update_post_meta( $voucher_id, 'voucher_status', 'active' );
             update_post_meta( $voucher_id, 'activation_date', current_time( 'mysql' ) );
 
-            // Update Taxonomy
+            // Update Taxonomy: Remove 'pending' and add 'active'
+            wp_remove_object_terms( $voucher_id, 'pending', 'voucher-status' );
             wp_set_object_terms( $voucher_id, 'active', 'voucher-status' );
 
         } catch ( Exception $e ) {
             error_log( 'VoucherActivate Error: ' . $e->getMessage() );
-            // SAFE FALLBACK: Avoid critical error by nicely dying
-            wp_die( $e->getMessage(), 'Voucher Activation Error', [ 'response' => 403, 'back_link' => true ] );
+            // Use JetFormBuilder Exception to show error validation on the form
+            if ( class_exists( '\Jet_Form_Builder\Exceptions\Action_Exception' ) ) {
+                throw new \Jet_Form_Builder\Exceptions\Action_Exception( $e->getMessage() );
+            }
+            // Fallback
+            throw $e;
         }
     }
 
@@ -273,7 +290,8 @@ class Voucher_Manager {
             case 'used':
                 return '<span class="voucher-badge badge-used">Usado</i></span>';
             case 'transferred':
-                return '<span class="voucher-badge badge-transferred">Transferido</i></span>';
+                // User requested to show "Inativo" for transferred vouchers
+                return '<span class="voucher-badge badge-inactive">Inativo</span>';
             case 'pending_activation':
                 return '<span class="voucher-badge badge-pending">Pendente</i></span>';
             default:
@@ -378,6 +396,19 @@ class Voucher_Manager {
         $booking_id = get_post_meta( $id, 'linked_reservation_id', true );
 
         if ( ! empty( $booking_id ) ) {
+            // Check if this booking is actually active or cancelled
+            $cancellation_info = $this->get_booking_cancellation_info( $booking_id );
+
+            if ( $cancellation_info && in_array( $cancellation_info['status'], ['cancelled', 'refunded'] ) ) {
+                if ( 'admin_cancelled' === $cancellation_info['type'] ) {
+                    return 'Cancelado pela Administração';
+                } elseif ( 'user_cancelled' === $cancellation_info['type'] ) {
+                    return 'Cancelado pelo Cliente';
+                }
+                // Fallback if type is missing but status is cancelled
+                return 'Reserva Cancelada'; 
+            }
+
             return 'Voo marcado';
         }
 
@@ -538,6 +569,60 @@ class Voucher_Manager {
             return '1';
         }
         return '0';
+    }
+
+    /**
+     * Helper: Get Booking Cancellation Info
+     */
+    private function get_booking_cancellation_info( $booking_id ) {
+        // Try to find the Reservation Record CPT linked to this booking
+        // The booking_id is stored in 'booking_ids' meta, possibly serialized
+        
+        $posts = get_posts([
+            'post_type'      => 'reservation_record',
+            'meta_query'     => [
+                'relation' => 'OR',
+                [
+                    'key'     => 'booking_ids',
+                    'value'   => '"' . $booking_id . '"', // Serialized
+                    'compare' => 'LIKE'
+                ],
+                [
+                    'key'     => 'booking_ids',
+                    'value'   => $booking_id, // Direct
+                    'compare' => '='
+                ]
+            ],
+            'posts_per_page' => 1,
+            'fields'         => 'ids',
+        ]);
+
+        if ( empty( $posts ) ) {
+            // Fallback: Try simple LIKE if the rigid checks fail
+             $posts = get_posts([
+                'post_type'      => 'reservation_record',
+                'meta_query'     => [
+                    [
+                        'key'     => 'booking_ids',
+                        'value'   => $booking_id,
+                        'compare' => 'LIKE'
+                    ]
+                ],
+                'posts_per_page' => 1,
+                'fields'         => 'ids',
+            ]);
+        }
+        
+        if ( empty( $posts ) ) {
+            return null;
+        }
+
+        $post_id = $posts[0];
+        
+        return [
+            'status' => get_post_meta( $post_id, 'reservation_status', true ),
+            'type'   => get_post_meta( $post_id, 'resv_cancellation_type', true ),
+        ];
     }
 }
 

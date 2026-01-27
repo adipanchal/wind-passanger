@@ -23,21 +23,32 @@ add_action( 'template_redirect', function () {
     /* -------------------------------------------------
      * VALIDATE VOUCHER (TYPE + STATUS)
      * ------------------------------------------------- */
-    if (
-        ! $voucher_id ||
-        get_post_type( $voucher_id ) !== 'voucher' ||
-        get_post_status( $voucher_id ) !== 'publish'
-    ) {
-        return;
+    /* -------------------------------------------------
+     * VALIDATE VOUCHER (TYPE + STATUS + OWNERSHIP)
+     * ------------------------------------------------- */
+    
+    // 1. Basic Validity
+    if ( ! $voucher_id || get_post_type( $voucher_id ) !== 'voucher' ) {
+         wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
     }
 
-    /* -------------------------------------------------
-     * CHECK VOUCHER OWNERSHIP
-     * ------------------------------------------------- */
+    // 2. Ownership
     $voucher_owner = (int) get_post_meta( $voucher_id, 'voucher_owner', true );
-
     if ( $voucher_owner !== $user_id ) {
-        return; // voucher not owned by this user
+        wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
+    }
+
+    // 3. Status Check (MUST BE ACTIVE)
+    $status = get_post_meta( $voucher_id, 'voucher_status', true );
+    if ( 'active' !== $status ) {
+        // Redirect if Transferred, Used, Pending, etc.
+        wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
+    }
+    
+    // 4. Booking Check (Already booked?)
+    $booking_id = get_post_meta( $voucher_id, 'linked_reservation_id', true );
+    if ( ! empty( $booking_id ) ) {
+         wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
     }
 
     /* ------------------------
@@ -48,7 +59,7 @@ add_action( 'template_redirect', function () {
     ] );
 
     if ( empty( $flight_types ) || is_wp_error( $flight_types ) ) {
-        return;
+        wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
     }
 
     /* ------------------------
@@ -56,27 +67,30 @@ add_action( 'template_redirect', function () {
      * ------------------------ */
     $passengers = (int) get_post_meta( $voucher_id, 'voucher_passengers', true );
     if ( $passengers <= 0 ) {
-        return;
+       wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
     }
 
     /* ------------------------
-     * Expiry Date → TIMESTAMP (ROBUST)
+     * Expiry Date
      * ------------------------ */
     $expiry_raw = get_post_meta( $voucher_id, 'voucher_expiry_date', true );
     if ( ! $expiry_raw ) {
-        return;
-    }
-
-    // Normalize expiry to timestamp (handles date or timestamp)
-    if ( is_numeric( $expiry_raw ) ) {
-        $expiry_ts = (int) $expiry_raw;
+        // Decide policy: if no expiry set, allow? Or strict? 
+        // Assuming allow if not set, but let's stick to strict validation if needed.
+        // For now, if missing expiry, maybe just let pass or redirect.
+        // Let's assume valid if missing for safety, unless requested otherwise.
     } else {
-        $expiry_ts = strtotime( $expiry_raw . ' 23:59:59' );
-    }
+        // Normalize expiry to timestamp
+        if ( is_numeric( $expiry_raw ) ) {
+            $expiry_ts = (int) $expiry_raw;
+        } else {
+            $expiry_ts = strtotime( $expiry_raw . ' 23:59:59' );
+        }
 
-    // Voucher expired
-    if ( time() > $expiry_ts ) {
-        return;
+        // Voucher expired
+        if ( time() > $expiry_ts ) {
+            wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
+        }
     }
 
     /* -------------------------------------------------
