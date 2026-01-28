@@ -276,6 +276,40 @@ class Jet_Booking_Sync
             error_log( "JetBookingSync: Saved used coupon code '$coupon_code' to post $post_id" );
         }
 
+        // --- NEW: Voucher Usage Logic ---
+        // Check if voucher_id was submitted (Hidden field populated from URL)
+        $used_voucher_id = 0;
+        if ( ! empty( $form_data['voucher_id'] ) ) {
+            $used_voucher_id = absint( $form_data['voucher_id'] );
+        } elseif ( ! empty( $form_data['form_voucher_id'] ) ) { // Fallback name
+            $used_voucher_id = absint( $form_data['form_voucher_id'] );
+        }
+
+        if ( $used_voucher_id > 0 ) {
+            error_log( "JetBookingSync: Found used Voucher ID: $used_voucher_id for Reservation $post_id" );
+            
+            // 1. Link logic
+            // Save on Reservation Record
+            update_post_meta( $post_id, '_used_voucher_id', $used_voucher_id );
+            
+            // Save on Voucher CPT
+            // Use the first Booking ID as the link
+            $primary_booking_id = isset($booking_id_array[0]) ? $booking_id_array[0] : 0;
+            if ( $primary_booking_id ) {
+                update_post_meta( $used_voucher_id, 'linked_reservation_id', $primary_booking_id );
+            }
+
+            // 2. Mark as Used
+            update_post_meta( $used_voucher_id, 'voucher_status', 'used' );
+            update_post_meta( $used_voucher_id, 'usage_date', current_time( 'mysql' ) );
+            
+            // Update Taxonomy
+            wp_set_object_terms( $used_voucher_id, 'used', 'voucher-status' );
+            wp_remove_object_terms( $used_voucher_id, 'active', 'voucher-status' ); // Ensure active is removed
+
+            error_log( "JetBookingSync: Marked Voucher $used_voucher_id as USED and linked to Booking $primary_booking_id" );
+        }
+
         // Debug: Log first booking data
         $first_booking = $booking_ids[0];
         error_log('JetBookingSync: First Booking Data: ' . print_r($first_booking, true));
