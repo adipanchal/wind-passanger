@@ -84,8 +84,16 @@ class Flight_Cancellation_Admin {
                 'cancel_flight_' . $post_id
             );
             
+            // Updated JS to use Prompt
             echo sprintf(
-                '<a href="%s" class="cancel-flight-btn" onclick="return confirm(\'⚠️ CANCEL ENTIRE FLIGHT?\\n\\nThis will cancel ALL bookings for this flight.\\n\\nThis action cannot be undone!\');">Cancel Flight</a>',
+                '<a href="#" class="cancel-flight-btn" onclick="
+                    var reason = prompt(\'⚠️ CANCEL ENTIRE FLIGHT? This will cancel ALL bookings.\\n\\nPlease enter a cancellation reason:\');
+                    if(reason === null) return false;
+                    if(confirm(\'Are you sure you want to cancel this flight?\')) {
+                        window.location.href = \'%s\' + \'&reason=\' + encodeURIComponent(reason);
+                    }
+                    return false;
+                ">Cancel Flight</a>',
                 esc_url( $cancel_url )
             );
         }
@@ -140,48 +148,62 @@ class Flight_Cancellation_Admin {
             exit;
         }
         
+        $reason = isset( $_GET['reason'] ) ? sanitize_textarea_field( $_GET['reason'] ) : '';
+
         $cancelled_count = 0;
         
         // Cancel each booking
         foreach ( $bookings as $booking ) {
-            // Use JetBooking's DB class to update
+            
+            // --- 1. Re-check Status (Concurrency Protection) ---
+            // If this booking was part of a group processed in a previous iteration, it might already be cancelled.
+            $current_status = $wpdb->get_var( $wpdb->prepare( "SELECT status FROM $table_name WHERE booking_id = %d", $booking->booking_id ) );
+            if ( 'cancelled' === $current_status || 'refunded' === $current_status ) {
+                error_log( "FlightCancellation: Skipping Booking {$booking->booking_id} (Already Cancelled)" );
+                continue;
+            }
+
+            // --- 2. Find CPT & Set Meta FIRST ---
+            // We must set the cancellation type/reason BEFORE triggering the status update
+            // so that the 'monitor_booking_updates' hook reads the correct data.
+            $reservation_posts = get_posts([
+                'post_type'  => 'reservation_record',
+                'meta_query' => [
+                    [
+                        'key'     => 'booking_ids',
+                        'value'   => $booking->booking_id,
+                        'compare' => 'LIKE' 
+                    ]
+                ],
+                'posts_per_page' => 1,
+                'fields'         => 'ids',
+            ]);
+
+            if ( ! empty( $reservation_posts ) ) {
+                $cpt_id = $reservation_posts[0];
+                
+                // Set Meta: Type & Reason
+                update_post_meta( $cpt_id, 'resv_cancellation_type', 'flight_cancelled' );
+                update_post_meta( $cpt_id, '_admin_cancellation_reason', $reason );
+                // Note: We don't set 'reservation_status' here, handle_group_cancellation will do it.
+                
+                error_log( "FlightCancellation: Pre-set meta for CPT $cpt_id" );
+            }
+
+            // --- 3. Update DB (Triggers Monitor -> Group Handler -> Email) ---
             jet_abaf()->db->update_booking( $booking->booking_id, [
                 'status' => 'cancelled'
             ] );
             
             $cancelled_count++;
-            error_log( "FlightCancellation: Cancelled booking ID {$booking->booking_id} for {$booking->user_email}" );
-            
-            // Email will be sent here in future (Phase 6)
-            // do_action( 'wind_passenger/flight_cancelled_email', $booking->booking_id, $flight_id );
+            error_log( "FlightCancellation: Cancelled booking ID {$booking->booking_id}" );
+
+            // REMOVED: Manual do_action call. 
+            // The jet_abaf update triggers 'monitor_booking_updates' which triggers 'handle_group_cancellation' 
+            // which triggers 'wind_passenger/group_cancellation_email'.
         }
         
         error_log( "FlightCancellation: Successfully cancelled $cancelled_count bookings for Flight $flight_id" );
-        
-        // Update all affected Reservation Records with cancellation type = flight_cancelled
-        // The group cancellation logic already set them to user_cancelled, we need to override
-        $cancelled_ids = array_map( function($b) { return $b->booking_id; }, $bookings );
-        
-        $reservation_posts = get_posts([
-            'post_type'  => 'reservation_record',
-            'meta_query' => [
-                [
-                    'key'     => 'booking_ids',
-                    'compare' => 'EXISTS'
-                ]
-            ],
-            'posts_per_page' => -1,
-            'fields'         => 'ids',
-        ]);
-        
-        foreach ( $reservation_posts as $post_id ) {
-            $booking_ids = get_post_meta( $post_id, 'booking_ids', true );
-            if ( is_array( $booking_ids ) && !empty( array_intersect( $booking_ids, $cancelled_ids ) ) ) {
-                // This reservation record contains at least one cancelled booking from this flight
-                update_post_meta( $post_id, 'resv_cancellation_type', 'flight_cancelled' );
-                error_log( "FlightCancellation: Updated reservation record $post_id with flight_cancelled type" );
-            }
-        }
         
         // Redirect back with success message
         $redirect_url = add_query_arg( 

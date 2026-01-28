@@ -154,12 +154,16 @@ class Voucher_Manager {
             // Changed to use the specific Voucher Page URL (for dynamic templates)
             $activation_link = get_permalink( $new_voucher_id );
             
+            $expiry_date_raw = get_post_meta( $new_voucher_id, 'voucher_expiry_date', true );
+            $expiry_formatted = $this->format_portuguese_date( $expiry_date_raw );
+
             $subject = "You received a Gift Voucher from " . wp_get_current_user()->display_name;
             $message = "Hello $receiver_name,\n\n";
             $message .= "You have received a special gift voucher!\n\n";
             if ( $gift_message ) {
                 $message .= "Message: \"$gift_message\"\n\n";
             }
+            $message .= "Active your voucher before: " . $expiry_formatted . "\n\n";
             $message .= "Click here to accept and activate your voucher:\n";
             $message .= $activation_link . "\n\n";
             $message .= "Or copy this code manually: " . $code . "\n\n";
@@ -238,6 +242,16 @@ class Voucher_Manager {
             // Update Taxonomy: Remove 'pending' and add 'active'
             wp_remove_object_terms( $voucher_id, 'pending', 'voucher-status' );
             wp_set_object_terms( $voucher_id, 'active', 'voucher-status' );
+
+            // --- SEND ACTIVATION SUCCESS EMAIL ---
+            $success_subject = "Voucher Ativado com Sucesso! - Wind Passenger";
+            $success_msg  = "Olá " . $current_user->display_name . ",\n\n";
+            $success_msg .= "O seu voucher (Código: $activation_code) foi ativado com sucesso.\n";
+            $success_msg .= "Já pode marcar o seu voo na nossa plataforma.\n\n";
+            $success_msg .= "Obrigado,\nEquipa Wind Passenger";
+
+            wp_mail( $current_user->user_email, $success_subject, $success_msg );
+
 
         } catch ( Exception $e ) {
             error_log( 'VoucherActivate Error: ' . $e->getMessage() );

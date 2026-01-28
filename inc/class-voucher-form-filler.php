@@ -41,10 +41,14 @@ class Voucher_Form_Filler {
 		$after_ballooning     = get_post_meta( $voucher_id, 'voucher_after_ballooning', true );
 		if ( '' === $after_ballooning ) $after_ballooning = get_post_meta( $voucher_id, 'after_ballooning', true ); // Fallback
 
-        		// 3. Accommodation
+		// 3. Accommodation
 		$accommodation_status = get_post_meta( $voucher_id, 'voucher_accommodation_status', true );
 		if ( '' === $accommodation_status ) $accommodation_status = get_post_meta( $voucher_id, 'accommodation-status', true ); // Fallback
 
+		// 4. Transfer Status
+		$transfer_status = get_post_meta( $voucher_id, 'voucher_transfer_status', true );
+		if ( '' === $transfer_status ) $transfer_status = get_post_meta( $voucher_id, 'transfer_status', true ); // Fallback
+		
 		// 4. Output Javascript & CSS
 		?>
         <style>
@@ -72,7 +76,8 @@ class Voucher_Form_Filler {
 					id: "<?php echo esc_js( $voucher_id ); ?>",
 					gift_box: "<?php echo esc_js( $gift_box ); ?>",
 					after_ballooning: "<?php echo esc_js( $after_ballooning ); ?>",
-					accommodation_status: "<?php echo esc_js( $accommodation_status ); ?>"
+					accommodation_status: "<?php echo esc_js( $accommodation_status ); ?>",
+					transfer_status: "<?php echo esc_js( $transfer_status ); ?>"
 				};
                 
 				// Helper to set value and trigger events
@@ -138,6 +143,9 @@ class Voucher_Form_Filler {
 
 					// 6. Fill Accommodation Status
 					setField(form, 'accommodation_status', voucherData.accommodation_status);
+
+					// 7. Fill Transfer Status
+					setField(form, 'transfer_status', voucherData.transfer_status);
 				};
                 
 				// Observer to wait for Popup/Form to appear in DOM

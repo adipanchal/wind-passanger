@@ -330,3 +330,49 @@
             error_log( 'JFB Redemption: Not reducing amount (Current amount smaller than discount??)' );
         }
     }
+
+    // ==========================================
+    // JetFormBuilder: Send Flight Emails Action
+    // Actions/Hooks: 'jet-form-builder/custom-action/send_flight_emails'
+    // ==========================================
+    add_action( 'jet-form-builder/custom-action/send_flight_emails', 'wpj_send_flight_emails', 10, 2 );
+
+    function wpj_send_flight_emails( $request, $action_handler ) {
+
+        // 1. Get Repeater Data
+        // Based on common JetFormBuilder repeater structure, it returns an array of arrays
+        if ( empty( $request['passengers_details'] ) || ! is_array( $request['passengers_details'] ) ) {
+            return; 
+        }
+
+        $passengers = $request['passengers_details'];
+        $subject = 'Flight Booking Confirmation';
+        
+        // Set content type to HTML
+        $headers = array('Content-Type: text/html; charset=UTF-8');
+
+        // 2. Iterate and Send
+        foreach ( $passengers as $index => $passenger ) {
+            
+            // Extract Email and Name
+            // Ensure keys match your Form Field Names inside the repeater
+            $email = isset( $passenger['e_mail'] ) ? sanitize_email( $passenger['e_mail'] ) : '';
+            $name  = isset( $passenger['name'] )   ? sanitize_text_field( $passenger['name'] )   : 'Passenger';
+
+            if ( ! is_email( $email ) ) {
+                continue;
+            }
+
+            // Construct Message
+            $message  = "Hello $name,<br><br>";
+            $message .= "Thank you for your flight booking.<br>";
+            $message .= "Your passenger details have been received.<br><br>";
+            $message .= "Regards,<br>";
+            $message .= get_bloginfo( 'name' );
+
+            // Send Email
+            $sent = wp_mail( $email, $subject, $message, $headers );
+
+        }
+    }
+

@@ -153,3 +153,49 @@ add_shortcode('wc_edit_addresses_default', function () {
 
     return ob_get_clean();
 });
+
+// ===========================
+// SHORTCODE: Flight Availability Label (Front-end)
+// "Muitos Lugares Disponíveis" | "Poucos Lugares Disponíveis" | "Esgotado"
+// ===========================
+add_shortcode( 'wind_flight_availability_label', 'wind_shortcode_flight_availability_label' );
+
+function wind_shortcode_flight_availability_label() {
+    if ( ! class_exists( 'WPJ_Flight_Booking_Engine' ) ) {
+        return '';
+    }
+
+    $post_id = get_the_ID();
+    $data    = WPJ_Flight_Booking_Engine::instance()->get_flight_data( $post_id );
+    $available = $data['available'];
+
+    // Thresholds
+    $low_stock_threshold = 5;
+
+    $html = '<div class="wind-flight-status-wrapper">';
+    
+    // Status Logic
+    if ( $available <= 0 ) {
+        $html .= '<span class="wind-status-dot red"></span> <span class="wind-status-text">Esgotado</span>';
+    } elseif ( $available <= $low_stock_threshold ) {
+        // Poucos Lugares
+        $html .= '<span class="wind-status-dot yellow"></span> <span class="wind-status-text">Poucos Lugares Disponíveis</span>';
+    } else {
+        // Muitos Lugares
+        $html .= '<span class="wind-status-dot green"></span> <span class="wind-status-text">Muitos Lugares Disponíveis</span>';
+    }
+
+    $html .= '</div>';
+
+    // Inline CSS for the dot if theme doesn't have it
+    $html .= '<style>
+        .wind-flight-status-wrapper { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; text-transform: uppercase; }
+        .wind-status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .wind-status-dot.green { background-color: #8BC34A; } /* Light Green */
+        .wind-status-dot.yellow { background-color: #FFEB3B; } /* Yellow */
+        .wind-status-dot.red { background-color: #F44336; } /* Red */
+        .wind-status-text { color: #333; }
+    </style>';
+
+    return $html;
+}

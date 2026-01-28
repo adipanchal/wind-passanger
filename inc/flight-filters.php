@@ -61,6 +61,16 @@ add_action( 'template_redirect', function () {
     if ( empty( $flight_types ) || is_wp_error( $flight_types ) ) {
         wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
     }
+    /* ------------------------
+     * Voucher Flight Location
+     * ------------------------ */
+    $flight_location = wp_get_post_terms( $voucher_id, 'flight-location', [
+        'fields' => 'ids',
+    ] );
+
+    if ( empty( $flight_location ) || is_wp_error( $flight_location ) ) {
+        wp_redirect( home_url( '/a-minha-conta/' ) ); exit;
+    }
 
     /* ------------------------
      * Passengers
@@ -97,6 +107,7 @@ add_action( 'template_redirect', function () {
      * APPLY FILTERS (ALL CONDITIONS PASSED)
      * ------------------------------------------------- */
     set_query_var( 'voucher_flight_type', $flight_types );
+    set_query_var( 'voucher_flight_location', $flight_location);
     set_query_var( 'voucher_passengers', $passengers );
     set_query_var( 'voucher_expiry_ts', $expiry_ts );
 });

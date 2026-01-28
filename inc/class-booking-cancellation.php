@@ -24,6 +24,9 @@ class Booking_Cancellation {
         add_filter( 'post_row_actions', [ $this, 'add_cancellation_row_action' ], 10, 2 );
         add_action( 'admin_footer', [ $this, 'print_admin_cancellation_script' ] );
         add_action( 'wp_ajax_wind_admin_cancel_reservation', [ $this, 'handle_admin_cancellation' ] );
+
+        // Email Handler
+        add_action( 'wind_passenger/group_cancellation_email', [ $this, 'send_cancellation_email' ], 10, 3 );
     }
     
     /**
@@ -408,6 +411,10 @@ class Booking_Cancellation {
             $(document).on('click', '.wind-admin-cancel-btn', function(e) {
                 e.preventDefault();
                 
+                // Prompt for reason
+                var reason = prompt('Por favor, indique o motivo do cancelamento (opcional):');
+                if (reason === null) return; // User cancelled prompt
+
                 if (!confirm('Tem a certeza que deseja cancelar esta reserva administrativamente? Esta ação não pode ser desfeita.')) {
                     return;
                 }
@@ -431,6 +438,7 @@ class Booking_Cancellation {
                     data: {
                         action: 'wind_admin_cancel_reservation',
                         post_id: postId,
+                        cancellation_reason: reason,
                         nonce: '<?php echo wp_create_nonce( "wind_admin_cancel_nonce" ); ?>'
                     },
                     success: function(response) {
@@ -477,6 +485,10 @@ class Booking_Cancellation {
         // This ensures monitor_booking_updates sees this flag
         update_post_meta( $post_id, 'resv_cancellation_type', 'admin_cancelled' );
 
+        // Save Reason
+        $reason = isset( $_POST['cancellation_reason'] ) ? sanitize_textarea_field( $_POST['cancellation_reason'] ) : '';
+        update_post_meta( $post_id, '_admin_cancellation_reason', $reason );
+
         // 2. Trigger Cancellation via Booking Status Update
         // We find the trigger booking ID and update it.
         $booking_ids = get_post_meta( $post_id, 'booking_ids', true );
@@ -505,6 +517,83 @@ class Booking_Cancellation {
         } else {
             wp_send_json_error( 'Sistema de reservas indisponível.' );
         }
+    }
+
+    /**
+     * Send Cancellation Email
+     * Handles: User Cancel (Refund/No-Refund), Admin Cancel, Flight Cancel
+     */
+    public function send_cancellation_email( $post_id, $booking_ids, $status ) {
+        
+        $cancellation_type = get_post_meta( $post_id, 'resv_cancellation_type', true );
+        $admin_reason      = get_post_meta( $post_id, '_admin_cancellation_reason', true );
+        
+        // Flight Cancelled override from CPT if older method used, 
+        // effectively check if type is 'flight_cancelled'
+        
+        // Get User Email (from first booking)
+        $user_email = '';
+        if ( ! empty( $booking_ids ) && function_exists( 'jet_abaf' ) ) {
+            $b_id = $booking_ids[0];
+            global $wpdb;
+            $table = $wpdb->prefix . 'jet_apartment_bookings';
+            $user_email = $wpdb->get_var( $wpdb->prepare( "SELECT user_email FROM $table WHERE booking_id = %d", $b_id ) );
+        }
+
+        if ( ! is_email( $user_email ) ) {
+            error_log( "GroupCancellationEmail: No valid email found for Post $post_id" );
+            return;
+        }
+
+        $subject = 'Atualização sobre a sua Reserva - Wind Passenger';
+        $message = "Olá,\n\n";
+
+        // Logic Branching
+        if ( 'admin_cancelled' === $cancellation_type ) {
+            // ADMIN CANCEL
+            $subject = 'Reserva Cancelada pela Administração - Wind Passenger';
+            $message .= "A sua reserva foi cancelada pela nossa equipa administrativa.\n\n";
+            if ( ! empty( $admin_reason ) ) {
+                $message .= "Motivo: " . $admin_reason . "\n\n";
+            }
+            $message .= "Para mais informações, contacte-nos.";
+
+        } elseif ( 'flight_cancelled' === $cancellation_type ) {
+            // FLIGHT CANCEL
+            $subject = 'Aviso Importante: Voo Cancelado - Wind Passenger';
+            $message .= "Lamentamos informar que o seu voo foi cancelado.\n\n";
+            
+            // Check if reason was passed dynamically or stored
+            if ( ! empty( $admin_reason ) ) {
+                $message .= "Motivo: " . $admin_reason . "\n\n";
+            }
+            
+            $message .= "O seu voucher foi restaurado e pode ser usado para fazer uma nova marcação.\n";
+            $message .= "Pedimos desculpa pelo incómodo.";
+
+        } elseif ( 'user_cancelled' === $cancellation_type || 'user' === $cancellation_type ) {
+            // USER CANCEL
+            $subject = 'Confirmação de Cancelamento - Wind Passenger';
+            $message .= "Confirmamos o cancelamento da sua reserva.\n\n";
+            
+            if ( 'refunded' === $status ) {
+                 // > 72 Hours
+                 $message .= "Como o cancelamento foi feito com mais de 72 horas de antecedência, o seu bilhete/voucher foi restaurado.\n";
+                 $message .= "Pode usá-lo novamente para marcar outra data.\n";
+            } else {
+                 // < 72 Hours (Cancelled but not refunded)
+                 $message .= "Nota: O cancelamento foi feito com menos de 72 horas de antecedência.\n";
+                 $message .= "De acordo com os nossos termos, esta reserva não é elegível para reembolso ou restauração do voucher.\n";
+            }
+        } else {
+            // Default / Fallback
+            $message .= "O estado da sua reserva foi alterado para: " . ucfirst( $status ) . ".\n";
+        }
+
+        $message .= "\n\nAtenciosamente,\nEquipa Wind Passenger";
+
+        wp_mail( $user_email, $subject, $message );
+        error_log( "GroupCancellationEmail: Email sent to $user_email. Type: $cancellation_type" );
     }
 
 }
