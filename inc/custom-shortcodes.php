@@ -100,3 +100,56 @@ function wind_shortcode_purchase_date() {
     $post_date = get_the_date( 'j F Y' ); 
     return $post_date;
 }
+
+
+// ===========================
+// Reuse WooCommerce’s native Edit Account form
+// ===========================
+add_shortcode('wc_edit_account_form', function () {
+
+    if (!is_user_logged_in()) {
+        return '<p>Please log in to edit your contact details.</p>';
+    }
+
+    ob_start();
+
+    wc_get_template('myaccount/form-edit-account.php');
+
+    return ob_get_clean();
+});
+
+// ===========================
+// Both Billing + Shipping Together
+// ===========================
+add_shortcode('wc_billing_shipping_forms', function () {
+
+    if (!is_user_logged_in()) {
+        return '<p>Please log in to manage your addresses.</p>';
+    }
+
+    ob_start();
+
+    echo '<h3>Billing Address</h3>';
+    wc_get_template('myaccount/form-edit-address.php', ['load_address' => 'billing']);
+
+    echo '<hr>';
+
+    echo '<h3>Shipping Address</h3>';
+    wc_get_template('myaccount/form-edit-address.php', ['load_address' => 'shipping']);
+
+    return ob_get_clean();
+});
+
+add_shortcode('wc_edit_addresses_default', function () {
+
+    if (!is_user_logged_in()) {
+        return '<p>Please log in to manage your addresses.</p>';
+    }
+
+    ob_start();
+
+    // This loads the exact WooCommerce "Edit Address" page
+    wc_get_template('myaccount/my-address.php');
+
+    return ob_get_clean();
+});

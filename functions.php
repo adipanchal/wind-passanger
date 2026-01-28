@@ -27,6 +27,7 @@ require_once get_stylesheet_directory() . '/inc/my-account-filter.php';
 require_once get_stylesheet_directory() . '/inc/class-jet-booking-sync.php';
 require_once get_stylesheet_directory() . '/inc/class-checkin-manager.php';
 require_once get_stylesheet_directory() . '/inc/custom-shortcodes.php';
+require_once get_stylesheet_directory() . '/inc/woocommerce-redirect-logic.php';
 
 if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
@@ -100,26 +101,24 @@ function hello_child_enqueue_scripts()
         filemtime(get_stylesheet_directory() . '/js/price-formatter.js'),
         true
     );
-    // 6. Reservation Cancellation (Frontend)
-    if ( is_singular( 'reservation_record' ) || is_page() ) { // Load on reservation pages
-        wp_enqueue_script(
-            'hello-child-cancellation',
-            get_stylesheet_directory_uri() . '/js/reservation-cancellation.js',
-            array('jquery'), 
-            filemtime(get_stylesheet_directory() . '/js/reservation-cancellation.js'),
-            true
-        );
-        
-        // Localize Nonce
-        global $post;
-        $post_id = ( isset( $post->ID ) ) ? $post->ID : 0;
-        
-        wp_localize_script( 'hello-child-cancellation', 'wind_cancel_data', [ 
-            'nonce' => wp_create_nonce('wind_cancel_nonce'), 
-            'ajax_url' => admin_url('admin-ajax.php'),
-            'post_id' => $post_id // Fallback if URL parsing fails
-        ]);
-    }
+    // 6. Reservation Cancellation (Frontend) - Load globally for JetPopup support
+    wp_enqueue_script(
+        'hello-child-cancellation',
+        get_stylesheet_directory_uri() . '/js/reservation-cancellation.js',
+        array('jquery'), 
+        filemtime(get_stylesheet_directory() . '/js/reservation-cancellation.js'),
+        true
+    );
+    
+    // Localize Nonce
+    global $post;
+    $post_id = ( isset( $post->ID ) ) ? $post->ID : 0;
+    
+    wp_localize_script( 'hello-child-cancellation', 'wind_cancel_data', [ 
+        'nonce' => wp_create_nonce('wind_cancel_nonce'), 
+        'ajax_url' => admin_url('admin-ajax.php'),
+        'post_id' => $post_id // Fallback if URL parsing fails
+    ]);
 }
 add_action('wp_enqueue_scripts', 'hello_child_enqueue_scripts');
 

@@ -6,27 +6,16 @@ jQuery(document).ready(function ($) {
 
         var $btn = $(this);
 
-        // Confirm User Action
-        if (!confirm('Are you sure you want to cancel this reservation? This action cannot be undone.')) {
-            return;
-        }
-
-        // Show loading state
+        // Show loading state immediately (No "Confirm" check)
         var originalText = $btn.text();
         $btn.text('Processing...').prop('disabled', true);
 
-        // Get Post ID from URL (users reservation page: /reservation/123)
-        // We assume the URL structure ends with the ID or is accessible
-        // Use a localized variable if possible, or parse URL.
-        // Actually, easiest is if the button has data-post-id attribute.
-        // But user said "update the id which you gave", assuming just CSS ID?
-        // Let's try to parse the URL for the ID since the user mentioned "/reservation/post_id"
-
+        // Get Post ID from URL
         var urlPath = window.location.pathname;
         var pathParts = urlPath.replace(/\/$/, '').split('/');
-        var postId = pathParts[pathParts.length - 1]; // Get last segment
+        var postId = pathParts[pathParts.length - 1]; 
 
-        // Fallback: Check if wind_cancel_data has post_id (if we localize it)
+        // Fallback: Check if wind_cancel_data has post_id
         if (typeof wind_cancel_data !== 'undefined' && wind_cancel_data.post_id) {
             postId = wind_cancel_data.post_id;
         }
@@ -41,15 +30,15 @@ jQuery(document).ready(function ($) {
             },
             success: function (response) {
                 if (response.success) {
-                    alert(response.data);
-                    window.location.reload(); // Reload to show new status
+                    alert(response.data); // Success alert kept
+                    window.location.reload(); 
                 } else {
-                    alert('Error: ' + response.data);
+                    alert('Error: ' + response.data); // Error alert kept
                     $btn.text(originalText).prop('disabled', false);
                 }
             },
             error: function () {
-                alert('Network error. Please try again.');
+                alert('Network error. Please try again.'); // Network alert kept
                 $btn.text(originalText).prop('disabled', false);
             }
         });

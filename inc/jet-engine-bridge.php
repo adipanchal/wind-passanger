@@ -46,7 +46,8 @@ add_action('woocommerce_order_status_completed', function ($order_id) {
         $voucher_passengers = (int) extract_first_number($raw_passengers);
         $voucher_after_ballooning = $item->get_meta('extra-apres-ballooning');
         $voucher_gift_box         = $item->get_meta('pa_extra-gift-box');
-
+        $alojamento_local_hotel         = $item->get_meta('alojamento-local-hotel');
+        $transfer_status         = $item->get_meta('transfer');
         /* ------------------------------------
          * NEW: Flight Location (variation meta)
          * ------------------------------------ */
@@ -93,7 +94,8 @@ add_action('woocommerce_order_status_completed', function ($order_id) {
         update_post_meta($voucher_id, 'voucher_code', $voucher_code);
         update_post_meta($voucher_id, 'voucher_passengers', $voucher_passengers);
         update_post_meta($voucher_id, 'voucher_after_ballooning', $voucher_after_ballooning);
-        update_post_meta($voucher_id, 'voucher_accommodation_status', '');
+        update_post_meta($voucher_id, 'voucher_accommodation_status', $alojamento_local_hotel);
+        update_post_meta($voucher_id, 'voucher_transfer_status', $transfer_status);
         update_post_meta($voucher_id, 'voucher_expiry_date', $expiry);
         update_post_meta($voucher_id, 'voucher_gift_box', $voucher_gift_box);
         update_post_meta($voucher_id, 'voucher_owner', $user_id);
